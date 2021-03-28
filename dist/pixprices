@@ -1,0 +1,135 @@
+#!/usr/bin/env node
+'use strict';
+
+var sade = require('sade');
+var Debug = require('debug');
+var fs = require('fs');
+var cheerio = require('cheerio');
+var httpie = require('httpie');
+var s3js = require('s3js');
+
+function _interopDefaultLegacy (e) { return e && typeof e === 'object' && 'default' in e ? e : { 'default': e }; }
+
+function _interopNamespace(e) {
+  if (e && e.__esModule) return e;
+  var n = Object.create(null);
+  if (e) {
+    Object.keys(e).forEach(function (k) {
+      if (k !== 'default') {
+        var d = Object.getOwnPropertyDescriptor(e, k);
+        Object.defineProperty(n, k, d.get ? d : {
+          enumerable: true,
+          get: function () {
+            return e[k];
+          }
+        });
+      }
+    });
+  }
+  n['default'] = e;
+  return Object.freeze(n);
+}
+
+var sade__default = /*#__PURE__*/_interopDefaultLegacy(sade);
+var Debug__default = /*#__PURE__*/_interopDefaultLegacy(Debug);
+var fs__default = /*#__PURE__*/_interopDefaultLegacy(fs);
+var cheerio__default = /*#__PURE__*/_interopDefaultLegacy(cheerio);
+var s3js__namespace = /*#__PURE__*/_interopNamespace(s3js);
+
+var version = "0.0.1";
+
+function delay (ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+function wrap (fn) {
+  return (...args) =>
+    Promise.resolve(fn(...args)).catch(err => {
+      console.error(err);
+      process.exit(1);
+    })
+}
+
+const debug$1 = Debug__default['default']('pixprices:fetch-lse');
+const URL = {
+  ASX:
+    'https://www.lse.co.uk/share-prices/indices/ftse-all-share/constituents.html',
+  AXX:
+    'https://www.lse.co.uk/share-prices/indices/ftse-aim-all-share/constituents.html',
+  ALT:
+    'https://www.lse.co.uk/share-prices/sectors/alternative-investment-instruments/constituents.html'
+};
+async function fetchAll () {
+  const results = {};
+  for (const url of Object.values(URL)) {
+    await delay(1000);
+    const prices = await fetchPrices(url);
+    for (const price of prices) {
+      results[price.code] = price;
+    }
+  }
+  return results
+}
+async function fetchPrices (url) {
+  debug$1('fetching from %s', url);
+  const now = Date.now();
+  const { data: html } = await httpie.get(url);
+  const $ = cheerio__default['default'].load(html);
+  const items = [];
+  $('table.sp-constituents__table tr, table.sp-sectors__table tr')
+    .has('td')
+    .each((i, tr) => {
+      const values = [];
+      $('td', tr).each((j, td) => {
+        values.push($(td).text());
+      });
+      const { name, ticker } = extractNameAndTicker(values[0]);
+      const price = extractNumber(values[1]);
+      items.push({
+        code: ticker,
+        name,
+        price,
+        time: now,
+        source: 'lse'
+      });
+    });
+  debug$1('retrieved %d items', items.length);
+  return items
+}
+function extractNameAndTicker (text) {
+  const re = /(.*)\s+\(([A-Z0-9.]{2,4})\)$/;
+  const m = re.exec(text);
+  if (!m) return {}
+  const [, name, ticker] = m;
+  return { name, ticker }
+}
+function extractNumber (text) {
+  return parseFloat(text.replace(/,/g, ''))
+}
+
+const debug = Debug__default['default']('pixprices:main');
+const prog = sade__default['default']('pixprices');
+prog.version(version);
+prog
+  .command('fetch lse', 'fetch prices from lse')
+  .option(
+    '--prices',
+    's3 resource for prices',
+    's3://finance-readersludlow/public/prices'
+  )
+  .option('--temp', 'temp file for downloads', '/tmp/lse.json')
+  .action(wrap(updateFromLSE));
+prog.parse(process.argv);
+async function updateFromLSE ({ temp: tempFile, prices: pricesFile }) {
+  debug('fetching prices from LSE');
+  const updates = await fetchAll();
+  debug('Updating %s', pricesFile);
+  await s3js__namespace.download(pricesFile, tempFile);
+  const prices = JSON.parse(fs__default['default'].readFileSync(tempFile, 'utf8'));
+  for (const update of Object.values(updates)) {
+    prices[update.code] = Object.assign(prices[update.code] || {}, update);
+  }
+  fs__default['default'].writeFileSync(tempFile, JSON.stringify(prices));
+  await s3js__namespace.upload(tempFile, pricesFile);
+  fs__default['default'].unlinkSync(tempFile);
+  debug('%d updates applied', Object.values(updates).length);
+}

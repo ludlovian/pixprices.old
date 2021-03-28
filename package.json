@@ -1,0 +1,39 @@
+{
+  "name": "pixprices",
+  "version": "0.0.1",
+  "description": "Fetches prices",
+  "main": "src/index.js",
+  "scripts": {
+    "clean": "rm -rf dist/ node_modules/.cache/",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "format": "prettier-standard src/*.js",
+    "lint": "standard src/*.js | snazzy",
+    "build": "rollup -c rollup.config.js",
+    "postbuild": "chmod +x dist/pixprices",
+    "version": "npm run build && git add dist/pixprices"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ludlovian/pixprices.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cheerio": "^1.0.0-rc.5",
+    "httpie": "^1.1.2",
+    "s3js": "github:ludlovian/s3js",
+    "sade": "^1.7.4"
+  },
+  "devDependencies": {
+    "esm": "^3.2.25",
+    "prettier-standard": "^16.4.1",
+    "rollup": "^2.43.1",
+    "rollup-plugin-cleanup": "^3.2.1",
+    "rollup-plugin-commonjs": "^10.1.0",
+    "rollup-plugin-json": "^4.0.0",
+    "rollup-plugin-node-resolve": "^5.2.0",
+    "rollup-plugin-terser": "^7.0.2",
+    "snazzy": "^9.0.0",
+    "standard": "^16.0.3"
+  }
+}
