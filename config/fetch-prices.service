@@ -6,5 +6,5 @@ After=network.target
 User=alan
 WorkingDirectory=/home/alan/dev/pixprices
 Environment=NODE_ENV=production
-Environment=DEBUG="pixprices:*"
+Environment="DEBUG=pixprices:*" DEBUG_HIDE_DATE=true DEBUG_COLORS=false
 ExecStart=/usr/local/bin/node dist/pixprices fetch lse
