@@ -36,7 +36,7 @@ var fs__default = /*#__PURE__*/_interopDefaultLegacy(fs);
 var cheerio__default = /*#__PURE__*/_interopDefaultLegacy(cheerio);
 var s3js__namespace = /*#__PURE__*/_interopNamespace(s3js);
 
-var version = "0.1.0";
+var version = "0.2.0";
 
 function delay (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
