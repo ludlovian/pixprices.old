@@ -2,8 +2,8 @@
 'use strict';
 
 var sade = require('sade');
-var Debug = require('debug');
 var fs = require('fs');
+var Debug = require('debug');
 var cheerio = require('cheerio');
 var httpie = require('httpie');
 var s3js = require('s3js');
@@ -31,12 +31,12 @@ function _interopNamespace(e) {
 }
 
 var sade__default = /*#__PURE__*/_interopDefaultLegacy(sade);
-var Debug__default = /*#__PURE__*/_interopDefaultLegacy(Debug);
 var fs__default = /*#__PURE__*/_interopDefaultLegacy(fs);
+var Debug__default = /*#__PURE__*/_interopDefaultLegacy(Debug);
 var cheerio__default = /*#__PURE__*/_interopDefaultLegacy(cheerio);
 var s3js__namespace = /*#__PURE__*/_interopNamespace(s3js);
 
-var version = "0.2.0";
+var version = "0.3.0";
 
 function delay (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -106,7 +106,37 @@ function extractNumber (text) {
   return parseFloat(text.replace(/,/g, ''))
 }
 
-const debug = Debug__default['default']('pixprices:main');
+const debug = Debug__default['default']('pixprices:update-prices');
+async function updatePrices ({
+  temp: tempFile,
+  prices: pricesFile,
+  'purge-after': purgeDays
+} = {}) {
+  debug('fetching prices from LSE');
+  const updates = await fetchAll();
+  debug('Updating %s', pricesFile);
+  await s3js__namespace.download(pricesFile, tempFile);
+  const prices = JSON.parse(fs__default['default'].readFileSync(tempFile, 'utf8'));
+  for (const update of Object.values(updates)) {
+    prices[update.code] = Object.assign(prices[update.code] || {}, update);
+  }
+  const purgeBefore = Date.now() - purgeDays * 24 * 60 * 60 * 1000;
+  const purged = [];
+  for (const item of Array.from(Object.values(prices))) {
+    if (!item.time || item.time < purgeBefore) {
+      purged.push(item.code);
+      delete prices[item.code];
+    }
+  }
+  fs__default['default'].writeFileSync(tempFile, JSON.stringify(prices));
+  await s3js__namespace.upload(tempFile, pricesFile);
+  fs__default['default'].unlinkSync(tempFile);
+  debug('%d updates applied', Object.values(updates).length);
+  if (purged.length) {
+    debug('Items purged: %s', purged.join(','));
+  }
+}
+
 const prog = sade__default['default']('pixprices');
 prog.version(version);
 prog
@@ -117,19 +147,6 @@ prog
     's3://finance-readersludlow/public/prices'
   )
   .option('--temp', 'temp file for downloads', '/tmp/lse.json')
-  .action(wrap(updateFromLSE));
+  .option('--purge-after', 'purge after days of non-update', 7)
+  .action(wrap(updatePrices));
 prog.parse(process.argv);
-async function updateFromLSE ({ temp: tempFile, prices: pricesFile }) {
-  debug('fetching prices from LSE');
-  const updates = await fetchAll();
-  debug('Updating %s', pricesFile);
-  await s3js__namespace.download(pricesFile, tempFile);
-  const prices = JSON.parse(fs__default['default'].readFileSync(tempFile, 'utf8'));
-  for (const update of Object.values(updates)) {
-    prices[update.code] = Object.assign(prices[update.code] || {}, update);
-  }
-  fs__default['default'].writeFileSync(tempFile, JSON.stringify(prices));
-  await s3js__namespace.upload(tempFile, pricesFile);
-  fs__default['default'].unlinkSync(tempFile);
-  debug('%d updates applied', Object.values(updates).length);
-}
