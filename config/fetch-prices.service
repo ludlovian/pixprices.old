@@ -1,0 +1,10 @@
+[Unit]
+Description=Fetch stock prices
+After=network.target
+
+[Service]
+User=alan
+WorkingDirectory=/home/alan/dev/pixprices
+Environment=NODE_ENV=production
+Environment=DEBUG="pixprices:*"
+ExecStart=/usr/local/bin/node dist/pixprices fetch lse

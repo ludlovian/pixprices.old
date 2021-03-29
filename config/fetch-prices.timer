@@ -1,0 +1,10 @@
+[Unit]
+Description=Runs fetch-prices service
+Requires=fetch-prices.service
+
+[Timer]
+Unit=fetch-prices.service
+OnCalendar=Mon..Fri 08,10,12,14,16:30:00
+
+[Install]
+WantedBy=timers.target
