@@ -2,80 +2,99 @@
 'use strict';
 
 var sade = require('sade');
-var fs = require('fs');
-var Debug = require('debug');
 var cheerio = require('cheerio');
 var httpie = require('httpie');
+var Debug = require('debug');
+var ms = require('ms');
+var Database = require('jsdbd');
+var promises = require('fs/promises');
 var s3js = require('s3js');
 
 function _interopDefaultLegacy (e) { return e && typeof e === 'object' && 'default' in e ? e : { 'default': e }; }
 
-function _interopNamespace(e) {
-  if (e && e.__esModule) return e;
-  var n = Object.create(null);
-  if (e) {
-    Object.keys(e).forEach(function (k) {
-      if (k !== 'default') {
-        var d = Object.getOwnPropertyDescriptor(e, k);
-        Object.defineProperty(n, k, d.get ? d : {
-          enumerable: true,
-          get: function () {
-            return e[k];
-          }
-        });
-      }
-    });
-  }
-  n['default'] = e;
-  return Object.freeze(n);
-}
-
 var sade__default = /*#__PURE__*/_interopDefaultLegacy(sade);
-var fs__default = /*#__PURE__*/_interopDefaultLegacy(fs);
-var Debug__default = /*#__PURE__*/_interopDefaultLegacy(Debug);
 var cheerio__default = /*#__PURE__*/_interopDefaultLegacy(cheerio);
-var s3js__namespace = /*#__PURE__*/_interopNamespace(s3js);
+var Debug__default = /*#__PURE__*/_interopDefaultLegacy(Debug);
+var ms__default = /*#__PURE__*/_interopDefaultLegacy(ms);
+var Database__default = /*#__PURE__*/_interopDefaultLegacy(Database);
 
 var version = "0.3.0";
 
 function delay (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
-function wrap (fn) {
-  return (...args) =>
-    Promise.resolve(fn(...args)).catch(err => {
-      console.error(err);
-      process.exit(1);
+
+const debug$2 = Debug__default['default']('pixprices:db');
+async function writePrices (items, opts) {
+  const db = await getDB(opts);
+  await Promise.all(
+    items.map(async item => {
+      const prev = await db.findOne('code', item.code);
+      if (prev) {
+        await db.update({ ...prev, ...item });
+      } else {
+        await db.insert(item);
+      }
     })
+  );
+  debug$2('wrote %d records', items.length);
+}
+async function purgeOldPrices (timeSpec, opts) {
+  const db = await getDB(opts);
+  const cutoff = Date.now() - ms__default['default'](timeSpec + '');
+  const recs = await db.getAll();
+  const old = recs.filter(({ time }) => time < cutoff);
+  if (old.length) {
+    await db.delete(old);
+    await db.compact();
+    debug$2('%d records were older than %s', old.length, timeSpec);
+  }
+}
+async function getAll (opts) {
+  const db = await getDB(opts);
+  return db.getAll()
+}
+async function getDB ({ database: dbFile }) {
+  const db = new Database__default['default'](dbFile);
+  await db.ensureIndex({ fieldName: 'code', unique: true });
+  return db
 }
 
 const debug$1 = Debug__default['default']('pixprices:fetch-lse');
-const URL = {
-  ASX:
-    'https://www.lse.co.uk/share-prices/indices/ftse-all-share/constituents.html',
-  AXX:
-    'https://www.lse.co.uk/share-prices/indices/ftse-aim-all-share/constituents.html',
-  ALT:
-    'https://www.lse.co.uk/share-prices/sectors/alternative-investment-instruments/constituents.html'
-};
-async function fetchAll () {
-  const results = {};
-  for (const url of Object.values(URL)) {
-    await delay(1000);
-    const prices = await fetchPrices(url);
-    for (const price of prices) {
-      results[price.code] = price;
-    }
-  }
-  return results
+const USER_AGENT =
+  'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36';
+async function fetchIndex (indexName, opts) {
+  debug$1('index %s', indexName);
+  const url = `https://www.lse.co.uk/share-prices/indices/${indexName}/constituents.html`;
+  return fetchCollection(
+    url,
+    'sp-constituents__table',
+    `lse:index:${indexName}`,
+    opts
+  )
 }
-async function fetchPrices (url) {
-  debug$1('fetching from %s', url);
-  const now = Date.now();
-  const { data: html } = await httpie.get(url);
+async function fetchSector (sectorName, opts) {
+  debug$1('sector %s', sectorName);
+  const url = `https://www.lse.co.uk/share-prices/sectors/${sectorName}/constituents.html`;
+  return fetchCollection(
+    url,
+    'sp-sectors__table',
+    `lse:sector:${sectorName}`,
+    opts
+  )
+}
+async function fetchCollection (url, collClass, source, opts) {
+  await delay(1000);
+  const now = new Date();
+  const fetchOpts = {
+    headers: {
+      'User-Agent': USER_AGENT
+    }
+  };
+  const { data: html } = await httpie.get(url, fetchOpts);
   const $ = cheerio__default['default'].load(html);
   const items = [];
-  $('table.sp-constituents__table tr, table.sp-sectors__table tr')
+  $(`table.${collClass} tr`)
     .has('td')
     .each((i, tr) => {
       const values = [];
@@ -89,11 +108,38 @@ async function fetchPrices (url) {
         name,
         price,
         time: now,
-        source: 'lse'
+        source
       });
     });
-  debug$1('retrieved %d items', items.length);
-  return items
+  debug$1('Read %d items', items.length);
+  await writePrices(items, opts);
+}
+async function fetchPrice (code, opts) {
+  debug$1('share %s', code);
+  await delay(1000);
+  const url = `https://www.lse.co.uk/SharePrice.asp?shareprice=${code}`;
+  const now = new Date();
+  const fetchOpts = {
+    headers: {
+      'User-Agent': USER_AGENT
+    }
+  };
+  const { data: html } = await httpie.get(url, fetchOpts);
+  const $ = cheerio__default['default'].load(html);
+  const item = {
+    code,
+    time: now,
+    source: 'lse:share'
+  };
+  item.name = $('h1.title__title')
+    .text()
+    .replace(/ Share Price.*/, '');
+  item.price = extractNumber(
+    $('span[data-field="BID"]')
+      .first()
+      .text()
+  );
+  await writePrices([item], opts);
 }
 function extractNameAndTicker (text) {
   const re = /(.*)\s+\(([A-Z0-9.]{2,4})\)$/;
@@ -106,47 +152,45 @@ function extractNumber (text) {
   return parseFloat(text.replace(/,/g, ''))
 }
 
-const debug = Debug__default['default']('pixprices:update-prices');
-async function updatePrices ({
-  temp: tempFile,
-  prices: pricesFile,
-  'purge-after': purgeDays
-} = {}) {
-  debug('fetching prices from LSE');
-  const updates = await fetchAll();
-  debug('Updating %s', pricesFile);
-  await s3js__namespace.download(pricesFile, tempFile);
-  const prices = JSON.parse(fs__default['default'].readFileSync(tempFile, 'utf8'));
-  for (const update of Object.values(updates)) {
-    prices[update.code] = Object.assign(prices[update.code] || {}, update);
-  }
-  const purgeBefore = Date.now() - purgeDays * 24 * 60 * 60 * 1000;
-  const purged = [];
-  for (const item of Array.from(Object.values(prices))) {
-    if (!item.time || item.time < purgeBefore) {
-      purged.push(item.code);
-      delete prices[item.code];
-    }
-  }
-  fs__default['default'].writeFileSync(tempFile, JSON.stringify(prices));
-  await s3js__namespace.upload(tempFile, pricesFile);
-  fs__default['default'].unlinkSync(tempFile);
-  debug('%d updates applied', Object.values(updates).length);
-  if (purged.length) {
-    debug('Items purged: %s', purged.join(','));
-  }
+const debug = Debug__default['default']('pixprices:publish');
+async function publishPrices (opts) {
+  const { tempfile, s3file } = opts;
+  const items = await getAll(opts);
+  const data = items.reduce((data, rec) => {
+    const { _id, code, time, ...rest } = rec;
+    data[code] = { code, ...rest, time: +time };
+    return data
+  }, {});
+  await promises.writeFile(tempfile, JSON.stringify(data), 'utf8');
+  await s3js.upload(tempfile, s3file);
+  await promises.unlink(tempfile);
+  debug('%d prices uploaded to %s', items.length, s3file);
 }
 
 const prog = sade__default['default']('pixprices');
-prog.version(version);
+prog.version(version).option('--database', 'database name', 'prices.db');
+prog.command('fetch lse index <index>', 'fetch index prices').action(fetchIndex);
 prog
-  .command('fetch lse', 'fetch prices from lse')
+  .command('fetch lse sector <sector>', 'fetch sector prices')
+  .action(fetchSector);
+prog.command('fetch lse price <code>', 'fetch stock price').action(fetchPrice);
+prog
+  .command('purge prices after <time>', 'purge old prices')
+  .action(purgeOldPrices);
+prog
+  .command('publish', 'publish prices to S3')
+  .option('--tempfile', 'transfer temp file', '/tmp/prices.json')
   .option(
-    '--prices',
-    's3 resource for prices',
+    '--s3file',
+    'publish destination',
     's3://finance-readersludlow/public/prices'
   )
-  .option('--temp', 'temp file for downloads', '/tmp/lse.json')
-  .option('--purge-after', 'purge after days of non-update', 7)
-  .action(wrap(updatePrices));
-prog.parse(process.argv);
+  .action(publishPrices);
+const parsed = prog.parse(process.argv, { lazy: true });
+if (parsed) {
+  const { handler, args } = parsed;
+  handler(...args).catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
+}

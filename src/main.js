@@ -4,22 +4,41 @@ import sade from 'sade'
 
 import { version } from '../package.json'
 
-import { wrap } from './util'
-import { updatePrices } from './update-prices'
+import { fetchIndex, fetchSector, fetchPrice } from './fetch-lse'
+import { purgeOldPrices } from './db'
+import { publishPrices } from './publish'
 
 const prog = sade('pixprices')
 
-prog.version(version)
+prog.version(version).option('--database', 'database name', 'prices.db')
+
+prog.command('fetch lse index <index>', 'fetch index prices').action(fetchIndex)
 
 prog
-  .command('fetch lse', 'fetch prices from lse')
+  .command('fetch lse sector <sector>', 'fetch sector prices')
+  .action(fetchSector)
+
+prog.command('fetch lse price <code>', 'fetch stock price').action(fetchPrice)
+
+prog
+  .command('purge prices after <time>', 'purge old prices')
+  .action(purgeOldPrices)
+
+prog
+  .command('publish', 'publish prices to S3')
+  .option('--tempfile', 'transfer temp file', '/tmp/prices.json')
   .option(
-    '--prices',
-    's3 resource for prices',
+    '--s3file',
+    'publish destination',
     's3://finance-readersludlow/public/prices'
   )
-  .option('--temp', 'temp file for downloads', '/tmp/lse.json')
-  .option('--purge-after', 'purge after days of non-update', 7)
-  .action(wrap(updatePrices))
+  .action(publishPrices)
 
-prog.parse(process.argv)
+const parsed = prog.parse(process.argv, { lazy: true })
+if (parsed) {
+  const { handler, args } = parsed
+  handler(...args).catch(err => {
+    console.error(err)
+    process.exit(1)
+  })
+}
