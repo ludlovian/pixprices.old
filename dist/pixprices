@@ -23,67 +23,35 @@ var version = "0.4.1";
 function delay (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
-
-const debug$2 = Debug__default['default']('pixprices:db');
-async function writePrices (items, opts) {
-  const db = await getDB(opts);
-  await Promise.all(
-    items.map(async item => {
-      const prev = await db.findOne('code', item.code);
-      if (prev) {
-        await db.update({ ...prev, ...item });
-      } else {
-        await db.insert(item);
-      }
+function toArr (x) {
+  return !x ? [] : Array.isArray(x) ? x : [x]
+}
+function wrap (fn) {
+  return (...args) =>
+    Promise.resolve(fn(...args)).catch(err => {
+      console.error(err);
+      process.exit(1);
     })
-  );
-  debug$2('wrote %d records', items.length);
-}
-async function purgeOldPrices (timeSpec, opts) {
-  const db = await getDB(opts);
-  const cutoff = Date.now() - ms__default['default'](timeSpec + '');
-  const recs = await db.getAll();
-  const old = recs.filter(({ time }) => time < cutoff);
-  if (old.length) {
-    await db.delete(old);
-    await db.compact();
-    debug$2('%d records were older than %s', old.length, timeSpec);
-  }
-}
-async function getAll (opts) {
-  const db = await getDB(opts);
-  return db.getAll()
-}
-async function getDB ({ database: dbFile }) {
-  const db = new Database__default['default'](dbFile);
-  await db.ensureIndex({ fieldName: 'code', unique: true });
-  return db
 }
 
-const debug$1 = Debug__default['default']('pixprices:fetch-lse');
+const debug$2 = Debug__default['default']('pixprices:fetch-lse');
 const USER_AGENT =
   'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36';
-async function fetchIndex (indexName, opts) {
-  debug$1('index %s', indexName);
+async function fetchIndex (indexName) {
+  debug$2('index %s', indexName);
   const url = `https://www.lse.co.uk/share-prices/indices/${indexName}/constituents.html`;
   return fetchCollection(
     url,
     'sp-constituents__table',
-    `lse:index:${indexName}`,
-    opts
+    `lse:index:${indexName}`
   )
 }
-async function fetchSector (sectorName, opts) {
-  debug$1('sector %s', sectorName);
+async function fetchSector (sectorName) {
+  debug$2('sector %s', sectorName);
   const url = `https://www.lse.co.uk/share-prices/sectors/${sectorName}/constituents.html`;
-  return fetchCollection(
-    url,
-    'sp-sectors__table',
-    `lse:sector:${sectorName}`,
-    opts
-  )
+  return fetchCollection(url, 'sp-sectors__table', `lse:sector:${sectorName}`)
 }
-async function fetchCollection (url, collClass, source, opts) {
+async function fetchCollection (url, collClass, source) {
   await delay(1000);
   const now = new Date();
   const fetchOpts = {
@@ -111,11 +79,11 @@ async function fetchCollection (url, collClass, source, opts) {
         source
       });
     });
-  debug$1('Read %d items', items.length);
-  await writePrices(items, opts);
+  debug$2('Read %d items', items.length);
+  return items
 }
-async function fetchPrice (code, opts) {
-  debug$1('share %s', code);
+async function fetchPrice (code) {
+  debug$2('share %s', code);
   await delay(1000);
   const url = `https://www.lse.co.uk/SharePrice.asp?shareprice=${code}`;
   const now = new Date();
@@ -139,7 +107,7 @@ async function fetchPrice (code, opts) {
       .first()
       .text()
   );
-  await writePrices([item], opts);
+  return item
 }
 function extractNameAndTicker (text) {
   const re = /(.*)\s+\(([A-Z0-9.]{2,4})\)$/;
@@ -150,6 +118,42 @@ function extractNameAndTicker (text) {
 }
 function extractNumber (text) {
   return parseFloat(text.replace(/,/g, ''))
+}
+
+const debug$1 = Debug__default['default']('pixprices:db');
+async function writePrices (items, opts) {
+  const db = await getDB(opts);
+  await Promise.all(
+    items.map(async item => {
+      const prev = await db.findOne('code', item.code);
+      if (prev) {
+        await db.update({ ...prev, ...item });
+      } else {
+        await db.insert(item);
+      }
+    })
+  );
+  debug$1('wrote %d records', items.length);
+}
+async function purgeOldPrices (timeSpec, opts) {
+  const db = await getDB(opts);
+  const cutoff = Date.now() - ms__default['default'](timeSpec + '');
+  const recs = await db.getAll();
+  const old = recs.filter(({ time }) => time < cutoff);
+  if (old.length) {
+    await db.delete(old);
+    await db.compact();
+    debug$1('%d records were older than %s', old.length, timeSpec);
+  }
+}
+async function getAll (opts) {
+  const db = await getDB(opts);
+  return db.getAll()
+}
+async function getDB ({ database: dbFile }) {
+  const db = new Database__default['default'](dbFile);
+  await db.ensureIndex({ fieldName: 'code', unique: true });
+  return db
 }
 
 const debug = Debug__default['default']('pixprices:publish');
@@ -168,29 +172,45 @@ async function publishPrices (opts) {
 }
 
 const prog = sade__default['default']('pixprices');
-prog.version(version).option('--database', 'database name', 'prices.db');
-prog.command('fetch lse index <index>', 'fetch index prices').action(fetchIndex);
+prog.version(version);
 prog
-  .command('fetch lse sector <sector>', 'fetch sector prices')
-  .action(fetchSector);
-prog.command('fetch lse price <code>', 'fetch stock price').action(fetchPrice);
-prog
-  .command('purge prices after <time>', 'purge old prices')
-  .action(purgeOldPrices);
-prog
-  .command('publish', 'publish prices to S3')
+  .command('fetch', 'fetch prices')
+  .option('--index', 'index to fetch')
+  .option('--sector', 'sector to fetch')
+  .option('--stock', 'stock to fetch')
+  .option('--database', 'database name', 'prices.db')
   .option('--tempfile', 'transfer temp file', '/tmp/prices.json')
   .option(
     '--s3file',
     'publish destination',
     's3://finance-readersludlow/public/prices'
   )
-  .action(publishPrices);
-const parsed = prog.parse(process.argv, { lazy: true });
-if (parsed) {
-  const { handler, args } = parsed;
-  handler(...args).catch(err => {
-    console.error(err);
-    process.exit(1);
-  });
+  .option('--purge', 'purge period')
+  .option('--publish', 'publish current prices')
+  .action(wrap(fetchPrices));
+prog.parse(process.argv, {
+  string: ['purge'],
+  boolean: ['publish']
+});
+async function fetchPrices (options) {
+  const { index, sector, stock, purge, publish } = options;
+  const items = [];
+  for (const name of toArr(index)) {
+    items.push(...(await fetchIndex(name)));
+  }
+  for (const name of toArr(sector)) {
+    items.push(...(await fetchSector(name)));
+  }
+  for (const name of toArr(stock)) {
+    items.push(await fetchPrice(name));
+  }
+  if (items.length) {
+    await writePrices(items, options);
+  }
+  if (purge) {
+    await purgeOldPrices(purge, options);
+  }
+  if (publish) {
+    await publishPrices(options);
+  }
 }

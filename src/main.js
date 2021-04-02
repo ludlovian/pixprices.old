@@ -5,40 +5,59 @@ import sade from 'sade'
 import { version } from '../package.json'
 
 import { fetchIndex, fetchSector, fetchPrice } from './fetch-lse'
-import { purgeOldPrices } from './db'
+import { purgeOldPrices, writePrices } from './db'
 import { publishPrices } from './publish'
+import { wrap, toArr } from './util'
 
 const prog = sade('pixprices')
 
-prog.version(version).option('--database', 'database name', 'prices.db')
-
-prog.command('fetch lse index <index>', 'fetch index prices').action(fetchIndex)
+prog.version(version)
 
 prog
-  .command('fetch lse sector <sector>', 'fetch sector prices')
-  .action(fetchSector)
-
-prog.command('fetch lse price <code>', 'fetch stock price').action(fetchPrice)
-
-prog
-  .command('purge prices after <time>', 'purge old prices')
-  .action(purgeOldPrices)
-
-prog
-  .command('publish', 'publish prices to S3')
+  .command('fetch', 'fetch prices')
+  .option('--index', 'index to fetch')
+  .option('--sector', 'sector to fetch')
+  .option('--stock', 'stock to fetch')
+  .option('--database', 'database name', 'prices.db')
   .option('--tempfile', 'transfer temp file', '/tmp/prices.json')
   .option(
     '--s3file',
     'publish destination',
     's3://finance-readersludlow/public/prices'
   )
-  .action(publishPrices)
+  .option('--purge', 'purge period')
+  .option('--publish', 'publish current prices')
+  .action(wrap(fetchPrices))
 
-const parsed = prog.parse(process.argv, { lazy: true })
-if (parsed) {
-  const { handler, args } = parsed
-  handler(...args).catch(err => {
-    console.error(err)
-    process.exit(1)
-  })
+prog.parse(process.argv, {
+  string: ['purge'],
+  boolean: ['publish']
+})
+
+async function fetchPrices (options) {
+  const { index, sector, stock, purge, publish } = options
+  const items = []
+  for (const name of toArr(index)) {
+    items.push(...(await fetchIndex(name)))
+  }
+
+  for (const name of toArr(sector)) {
+    items.push(...(await fetchSector(name)))
+  }
+
+  for (const name of toArr(stock)) {
+    items.push(await fetchPrice(name))
+  }
+
+  if (items.length) {
+    await writePrices(items, options)
+  }
+
+  if (purge) {
+    await purgeOldPrices(purge, options)
+  }
+
+  if (publish) {
+    await publishPrices(options)
+  }
 }

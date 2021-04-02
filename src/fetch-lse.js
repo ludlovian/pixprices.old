@@ -5,14 +5,13 @@ import { get } from 'httpie'
 import Debug from 'debug'
 
 import { delay } from './util'
-import { writePrices } from './db'
 
 const debug = Debug('pixprices:fetch-lse')
 
 const USER_AGENT =
   'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36'
 
-export async function fetchIndex (indexName, opts) {
+export async function fetchIndex (indexName) {
   // ftse-all-share
   // ftse-aim-all-share
   debug('index %s', indexName)
@@ -20,24 +19,18 @@ export async function fetchIndex (indexName, opts) {
   return fetchCollection(
     url,
     'sp-constituents__table',
-    `lse:index:${indexName}`,
-    opts
+    `lse:index:${indexName}`
   )
 }
 
-export async function fetchSector (sectorName, opts) {
+export async function fetchSector (sectorName) {
   // alternative-investment-instruments
   debug('sector %s', sectorName)
   const url = `https://www.lse.co.uk/share-prices/sectors/${sectorName}/constituents.html`
-  return fetchCollection(
-    url,
-    'sp-sectors__table',
-    `lse:sector:${sectorName}`,
-    opts
-  )
+  return fetchCollection(url, 'sp-sectors__table', `lse:sector:${sectorName}`)
 }
 
-async function fetchCollection (url, collClass, source, opts) {
+async function fetchCollection (url, collClass, source) {
   await delay(1000)
 
   const now = new Date()
@@ -68,10 +61,10 @@ async function fetchCollection (url, collClass, source, opts) {
       })
     })
   debug('Read %d items', items.length)
-  await writePrices(items, opts)
+  return items
 }
 
-export async function fetchPrice (code, opts) {
+export async function fetchPrice (code) {
   debug('share %s', code)
   await delay(1000)
 
@@ -99,7 +92,7 @@ export async function fetchPrice (code, opts) {
       .first()
       .text()
   )
-  await writePrices([item], opts)
+  return item
 }
 
 function extractNameAndTicker (text) {

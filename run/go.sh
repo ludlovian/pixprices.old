@@ -1,6 +1,8 @@
-dist/pixprices fetch lse index ftse-all-share
-dist/pixprices fetch lse index ftse-aim-all-share
-dist/pixprices fetch lse sector alternative-investment-instruments
-dist/pixprices fetch lse price DGI9
-dist/pixprices purge prices after 7d
-dist/pixprices publish
+dist/pixprices \
+    fetch \
+    --index ftse-all-share \
+    --index ftse-aim-all-share \
+    --sector alternative-investment-instruments \
+    --stock DGI9 \
+    --purge 7d \
+    --publish
