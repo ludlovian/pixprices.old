@@ -1,6 +1,6 @@
 {
   "name": "pixprices",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Fetches prices",
   "main": "src/index.js",
   "scripts": {
