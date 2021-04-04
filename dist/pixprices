@@ -18,7 +18,7 @@ var Debug__default = /*#__PURE__*/_interopDefaultLegacy(Debug);
 var ms__default = /*#__PURE__*/_interopDefaultLegacy(ms);
 var Database__default = /*#__PURE__*/_interopDefaultLegacy(Database);
 
-var version = "0.5.0";
+var version = "0.5.1";
 
 function delay (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
