@@ -9,16 +9,24 @@ const debug = Debug('pixprices:db')
 
 export async function writePrices (items, opts) {
   const db = await getDB(opts)
-  await Promise.all(
-    items.map(async item => {
-      const prev = await db.findOne('code', item.code)
-      if (prev) {
-        await db.update({ ...prev, ...item })
-      } else {
-        await db.insert(item)
-      }
-    })
-  )
+  const recs = await db.getAll()
+  const inserts = []
+  const updates = []
+  items.forEach(item => {
+    const prev = recs.find(rec => rec.code === item.code)
+    if (prev) {
+      updates.push({ ...prev, ...item })
+    } else {
+      inserts.push(item)
+    }
+  })
+  if (inserts.length) {
+    await db.insert(inserts)
+  }
+
+  if (updates.length) {
+    await db.update(updates)
+  }
 
   debug('wrote %d records', items.length)
 }
