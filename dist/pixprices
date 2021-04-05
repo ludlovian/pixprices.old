@@ -123,26 +123,27 @@ function extractNumber (text) {
 const debug$1 = Debug__default['default']('pixprices:db');
 async function writePrices (items, opts) {
   const db = await getDB(opts);
+  const recs = await db.getAll();
   const seenCodes = new Set();
-  items = items.filter(item => {
-    const { code } = item;
-    const seen = seenCodes.has(code);
-    seenCodes.add(code);
-    return !seen
-  });
-  let inserts = 0;
-  let updates = 0;
+  const inserts = [];
+  const updates = [];
   for (const item of items) {
-    const prev = await db.find('code', item.code);
+    if (seenCodes.has(item.code)) continue
+    seenCodes.add(item.code);
+    const prev = recs.find(rec => rec.code === item.code);
     if (prev) {
-      await db.update({ ...prev, ...item });
-      updates++;
+      updates.push({ ...prev, ...item });
     } else {
-      await db.insert(item);
-      inserts++;
+      inserts.push(item);
     }
   }
-  debug$1('Updated %d and inserted %d records', updates, inserts);
+  if (inserts.length) {
+    await db.insert(inserts);
+  }
+  if (updates.length) {
+    await db.update(updates);
+  }
+  debug$1('Updated %d and inserted %d records', updates.length, inserts.length);
 }
 async function purgeOldPrices (timeSpec, opts) {
   const db = await getDB(opts);

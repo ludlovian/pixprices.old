@@ -10,30 +10,35 @@ const debug = Debug('pixprices:db')
 export async function writePrices (items, opts) {
   const db = await getDB(opts)
 
-  // dedupe the items
-  const seenCodes = new Set()
-  items = items.filter(item => {
-    const { code } = item
-    const seen = seenCodes.has(code)
-    seenCodes.add(code)
-    return !seen
-  })
+  // load the existing records
+  const recs = await db.getAll()
 
-  let inserts = 0
-  let updates = 0
+  // now dedupe and assemble inserts & updates
+  const seenCodes = new Set()
+  const inserts = []
+  const updates = []
 
   for (const item of items) {
-    const prev = await db.find('code', item.code)
+    if (seenCodes.has(item.code)) continue
+    seenCodes.add(item.code)
+
+    const prev = recs.find(rec => rec.code === item.code)
     if (prev) {
-      await db.update({ ...prev, ...item })
-      updates++
+      updates.push({ ...prev, ...item })
     } else {
-      await db.insert(item)
-      inserts++
+      inserts.push(item)
     }
   }
 
-  debug('Updated %d and inserted %d records', updates, inserts)
+  if (inserts.length) {
+    await db.insert(inserts)
+  }
+
+  if (updates.length) {
+    await db.update(updates)
+  }
+
+  debug('Updated %d and inserted %d records', updates.length, inserts.length)
 }
 
 export async function purgeOldPrices (timeSpec, opts) {
