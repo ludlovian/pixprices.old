@@ -10,27 +10,30 @@ const debug = Debug('pixprices:db')
 export async function writePrices (items, opts) {
   const db = await getDB(opts)
 
-  // first filter out duplicate updates, so that only the last one applies
-  const updates = items.reduce((updates, item) => {
-    updates[item.code] = item
-    return updates
-  }, {})
+  // dedupe the items
+  const seenCodes = new Set()
+  items = items.filter(item => {
+    const { code } = item
+    const seen = seenCodes.has(code)
+    seenCodes.add(code)
+    return !seen
+  })
 
-  // fetch existing records
-  const recs = await db.getAll()
+  let inserts = 0
+  let updates = 0
 
-  // merge in updates
-  for (const code of Object.keys(updates)) {
-    const prev = recs.find(rec => rec.code === code)
+  for (const item of items) {
+    const prev = await db.find('code', item.code)
     if (prev) {
-      updates[code] = { ...prev, ...updates[code] }
+      await db.update({ ...prev, ...item })
+      updates++
+    } else {
+      await db.insert(item)
+      inserts++
     }
   }
 
-  // now upsert these
-  await db.upsert(Object.values(updates))
-
-  debug('wrote %d records', Object.keys(updates).length)
+  debug('Updated %d and inserted %d records', updates, inserts)
 }
 
 export async function purgeOldPrices (timeSpec, opts) {
