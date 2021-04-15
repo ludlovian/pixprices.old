@@ -34,7 +34,7 @@ var Debug__default = /*#__PURE__*/_interopDefaultLegacy(Debug);
 var Database__default = /*#__PURE__*/_interopDefaultLegacy(Database);
 var cheerio__default = /*#__PURE__*/_interopDefaultLegacy(cheerio);
 
-var version = "1.0.0";
+var version = "1.0.1";
 
 function delay (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
