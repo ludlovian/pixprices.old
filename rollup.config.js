@@ -6,14 +6,15 @@ import commonjs from '@rollup/plugin-commonjs'
 export default {
   input: 'src/main.js',
   external: [
-    's3js',
     'fs/promises',
     'sade',
     'httpie',
     'cheerio',
     'debug',
     'ms',
-    'jsdbd'
+    'jsdbd',
+    '@googleapis/sheets',
+    '@googleapis/drive'
   ],
   plugins: [
     commonjs(),

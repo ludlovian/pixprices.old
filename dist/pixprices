@@ -2,29 +2,42 @@
 'use strict';
 
 var sade = require('sade');
+var Debug = require('debug');
+var Database = require('jsdbd');
 var cheerio = require('cheerio');
 var httpie = require('httpie');
-var Debug = require('debug');
-var ms = require('ms');
-var Database = require('jsdbd');
-var promises = require('fs/promises');
-var s3js = require('s3js');
 
 function _interopDefaultLegacy (e) { return e && typeof e === 'object' && 'default' in e ? e : { 'default': e }; }
 
+function _interopNamespace(e) {
+  if (e && e.__esModule) return e;
+  var n = Object.create(null);
+  if (e) {
+    Object.keys(e).forEach(function (k) {
+      if (k !== 'default') {
+        var d = Object.getOwnPropertyDescriptor(e, k);
+        Object.defineProperty(n, k, d.get ? d : {
+          enumerable: true,
+          get: function () {
+            return e[k];
+          }
+        });
+      }
+    });
+  }
+  n['default'] = e;
+  return Object.freeze(n);
+}
+
 var sade__default = /*#__PURE__*/_interopDefaultLegacy(sade);
-var cheerio__default = /*#__PURE__*/_interopDefaultLegacy(cheerio);
 var Debug__default = /*#__PURE__*/_interopDefaultLegacy(Debug);
-var ms__default = /*#__PURE__*/_interopDefaultLegacy(ms);
 var Database__default = /*#__PURE__*/_interopDefaultLegacy(Database);
+var cheerio__default = /*#__PURE__*/_interopDefaultLegacy(cheerio);
 
 var version = "0.5.4";
 
 function delay (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
-}
-function toArr (x) {
-  return !x ? [] : Array.isArray(x) ? x : [x]
 }
 function wrap (fn) {
   return (...args) =>
@@ -33,12 +46,30 @@ function wrap (fn) {
       process.exit(1);
     })
 }
+function once (fn) {
+  const f = (...args) => {
+    if (f.called) return f.value
+    f.value = fn(...args);
+    f.called = true;
+    return f.value
+  };
+  if (fn.name) {
+    Object.defineProperty(f, 'name', { value: fn.name, configurable: true });
+  }
+  return f
+}
+function jsDateToSerialDate (dt) {
+  const ms = dt.getTime();
+  const localMs = ms - dt.getTimezoneOffset() * 60 * 1000;
+  const localDays = localMs / (1000 * 24 * 60 * 60);
+  const epochStart = 25569;
+  return epochStart + localDays
+}
 
 const debug$2 = Debug__default['default']('pixprices:fetch-lse');
 const USER_AGENT =
   'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36';
 async function fetchIndex (indexName) {
-  debug$2('index %s', indexName);
   const url = `https://www.lse.co.uk/share-prices/indices/${indexName}/constituents.html`;
   return fetchCollection(
     url,
@@ -47,7 +78,6 @@ async function fetchIndex (indexName) {
   )
 }
 async function fetchSector (sectorName) {
-  debug$2('sector %s', sectorName);
   const url = `https://www.lse.co.uk/share-prices/sectors/${sectorName}/constituents.html`;
   return fetchCollection(url, 'sp-sectors__table', `lse:sector:${sectorName}`)
 }
@@ -72,20 +102,19 @@ async function fetchCollection (url, collClass, source) {
       const { name, ticker } = extractNameAndTicker(values[0]);
       const price = extractNumber(values[1]);
       items.push({
-        code: ticker,
+        ticker,
         name,
         price,
         time: now,
         source
       });
     });
-  debug$2('Read %d items', items.length);
+  debug$2('Read %d items from %s', items.length, source);
   return items
 }
-async function fetchPrice (code) {
-  debug$2('share %s', code);
+async function fetchPrice (ticker) {
   await delay(1000);
-  const url = `https://www.lse.co.uk/SharePrice.asp?shareprice=${code}`;
+  const url = `https://www.lse.co.uk/SharePrice.asp?shareprice=${ticker}`;
   const now = new Date();
   const fetchOpts = {
     headers: {
@@ -95,7 +124,7 @@ async function fetchPrice (code) {
   const { data: html } = await httpie.get(url, fetchOpts);
   const $ = cheerio__default['default'].load(html);
   const item = {
-    code,
+    ticker,
     time: now,
     source: 'lse:share'
   };
@@ -107,6 +136,7 @@ async function fetchPrice (code) {
       .first()
       .text()
   );
+  debug$2('fetched %s from lse:share', ticker);
   return item
 }
 function extractNameAndTicker (text) {
@@ -120,107 +150,397 @@ function extractNumber (text) {
   return parseFloat(text.replace(/,/g, ''))
 }
 
-const debug$1 = Debug__default['default']('pixprices:db');
-async function writePrices (items, opts) {
-  const db = await getDB(opts);
-  const recs = await db.getAll();
-  const seenCodes = new Set();
-  const inserts = [];
-  const updates = [];
-  for (const item of items) {
-    if (seenCodes.has(item.code)) continue
-    seenCodes.add(item.code);
-    const prev = recs.find(rec => rec.code === item.code);
-    if (prev) {
-      updates.push({ ...prev, ...item });
-    } else {
-      inserts.push(item);
+const debug$1 = Debug__default['default']('pixprices:portfolio');
+const DEFAULT_TICKER_COLUMN = 10;
+const DEFAULT_ACCOUNT_COLUMN = 0;
+const DEFAULT_ACCOUNT_LIST =
+  'AJL,ISA;RSGG,ISA;AJL,Dealing;RSGG,Dealing;AJL,SIPP;RSGG,SIPP;RSGG,SIPP2';
+const DEFAULT_DIV_COLUMN = 26;
+class Portfolio {
+  constructor () {
+    this.stocks = new Stocks();
+    this.positions = new Positions();
+  }
+  static async deserialize () {
+    const p = new Portfolio();
+    {
+      const db = new Database__default['default']('stocks.db');
+      for (const stock of await db.getAll()) {
+        Object.assign(p.stocks.get(stock.ticker), stock);
+      }
+    }
+    {
+      const db = new Database__default['default']('positions.db');
+      for (const pos of await db.getAll()) {
+        Object.assign(p.positions.get(pos), pos);
+      }
+    }
+    debug$1('portfolio loaded from database');
+    return p
+  }
+  async serialize () {
+    {
+      const db = new Database__default['default']('stocks.db');
+      await db.ensureIndex({ fieldName: 'ticker', unique: true });
+      const { insert, update, remove } = getChanges(
+        await db.getAll(),
+        Array.from(this.stocks.values()),
+        x => x.ticker
+      );
+      await db.insert(insert);
+      await db.update(update);
+      await db.delete(remove);
+      await db.compact();
+      debug$1(
+        'stocks wrtten to db (I:%d, U:%d, D:%d)',
+        insert.length,
+        update.length,
+        remove.length
+      );
+    }
+    {
+      const db = new Database__default['default']('positions.db');
+      await db.ensureIndex({ fieldName: 'who' });
+      await db.ensureIndex({ fieldName: 'account' });
+      await db.ensureIndex({ fieldName: 'ticker' });
+      const { insert, update, remove } = getChanges(
+        await db.getAll(),
+        Array.from(this.positions.values()),
+        keyToString
+      );
+      await db.insert(insert);
+      await db.update(update);
+      await db.delete(remove);
+      await db.compact();
+      debug$1(
+        'positions wrtten to db (I:%d, U:%d, D:%d)',
+        insert.length,
+        update.length,
+        remove.length
+      );
     }
   }
-  if (inserts.length) {
-    await db.insert(inserts);
+  loadStocksFromSheet (rangeData, options = {}) {
+    const {
+      tickerColumn = DEFAULT_TICKER_COLUMN,
+      divColumn = DEFAULT_DIV_COLUMN
+    } = options;
+    const old = new Set(this.stocks.values());
+    for (const row of rangeData) {
+      const ticker = row[tickerColumn];
+      if (!ticker) continue
+      const stock = this.stocks.get(ticker);
+      old.delete(stock);
+      const div = row[divColumn];
+      if (!div || typeof div !== 'number') {
+        stock.dividend = undefined;
+      } else {
+        stock.dividend = Math.round(div * 1e5) / 1e5;
+      }
+    }
+    for (const stock of old.values()) {
+      this.stocks.delete(stock.ticker);
+    }
+    debug$1('stocks refreshed from piggy sheet');
   }
-  if (updates.length) {
-    await db.update(updates);
+  loadPositionsFromSheet (rangeData, options = {}) {
+    const {
+      tickerColumn = DEFAULT_TICKER_COLUMN,
+      accountStartColumn = DEFAULT_ACCOUNT_COLUMN,
+      accountList = DEFAULT_ACCOUNT_LIST
+    } = options;
+    const accounts = accountList.split(';').map(code => {
+      const [who, account] = code.split(',');
+      return { who, account }
+    });
+    const old = new Set(this.positions.values());
+    for (const row of rangeData) {
+      const ticker = row[tickerColumn];
+      if (!ticker) continue
+      const qtys = row.slice(
+        accountStartColumn,
+        accountStartColumn + accounts.length
+      );
+      for (const [i, qty] of qtys.entries()) {
+        if (!qty || typeof qty !== 'number') continue
+        const pos = this.positions.get({ ...accounts[i], ticker });
+        pos.qty = qty;
+        old.delete(pos);
+      }
+    }
+    for (const pos of old) {
+      this.positions.delete(pos);
+    }
+    debug$1('positions refreshed from piggy sheet');
   }
-  debug$1('Updated %d and inserted %d records', updates.length, inserts.length);
-}
-async function purgeOldPrices (timeSpec, opts) {
-  const db = await getDB(opts);
-  const cutoff = Date.now() - ms__default['default'](timeSpec + '');
-  const recs = await db.getAll();
-  const old = recs.filter(({ time }) => time < cutoff);
-  if (old.length) {
-    await db.delete(old);
-    await db.compact();
-    debug$1('%d records were older than %s', old.length, timeSpec);
+  async fetchPrices () {
+    const need = new Map(
+      Array.from(this.stocks.values()).map(stock => [stock.ticker, stock])
+    );
+    const attempts = [
+      ['ftse-all-share', fetchIndex],
+      ['ftse-aim-all-share', fetchIndex],
+      ['alternative-investment-instruments', fetchSector]
+    ];
+    for (const [name, fetchFunc] of attempts) {
+      const items = await fetchFunc(name);
+      let count = 0;
+      for (const item of items) {
+        const ticker = item.ticker.replace(/\.+$/, '');
+        const stock = need.get(ticker);
+        if (!stock) continue
+        need.delete(ticker);
+        count++;
+        Object.assign(stock, {
+          name: item.name,
+          price: {
+            value: item.price,
+            source: item.source,
+            time: item.time
+          }
+        });
+      }
+      debug$1('%d prices from %s', count, name);
+      if (!need.size) break
+    }
+    for (const stock of need.values()) {
+      const item = await fetchPrice(stock.ticker.padEnd(3, '.'));
+      Object.assign(stock, {
+        name: item.name,
+        price: {
+          value: item.price,
+          source: item.source,
+          time: item.time
+        }
+      });
+    }
+    if (need.size) {
+      debug$1(
+        '%d prices individually: %s',
+        need.size,
+        Array.from(need.values())
+          .map(s => s.ticker)
+          .join(', ')
+      );
+    }
+  }
+  getPositionsSheet () {
+    const rows = [];
+    for (const pos of this.positions.values()) {
+      const { who, account, ticker, qty } = pos;
+      if (!qty) continue
+      const stock = this.stocks.get(ticker);
+      const {
+        dividend,
+        price: { value: price }
+      } = stock;
+      rows.push([
+        ticker,
+        who,
+        account,
+        qty,
+        price,
+        dividend,
+        Math.round(qty * price) / 100,
+        dividend ? Math.round(qty * dividend * 100) / 100 : undefined
+      ]);
+    }
+    return rows
   }
 }
-async function getAll (opts) {
-  const db = await getDB(opts);
-  return db.getAll()
+class Stocks {
+  constructor () {
+    this._map = new Map();
+  }
+  get (key) {
+    let s = this._map.get(key);
+    if (s) return s
+    s = Object.assign(new Stock(), { ticker: key });
+    this._map.set(key, s);
+    return s
+  }
+  delete (key) {
+    this._map.delete(key);
+  }
+  values () {
+    return this._map.values()
+  }
 }
-async function getDB ({ database: dbFile }) {
-  const db = new Database__default['default'](dbFile);
-  await db.ensureIndex({ fieldName: 'code', unique: true });
-  return db
+class Positions {
+  constructor () {
+    this._map = new Map();
+  }
+  get (key) {
+    const s = keyToString(key);
+    let pos = this._map.get(s);
+    if (pos) return pos
+    pos = Object.assign(new Position(), { ...key, qty: 0 });
+    this._map.set(s, pos);
+    return pos
+  }
+  delete (key) {
+    this._map.delete(keyToString(key));
+  }
+  values () {
+    return this._map.values()
+  }
+}
+class Position {}
+class Stock {}
+function keyToString ({ who, account, ticker }) {
+  return `${who}_${account}_${ticker}`
+}
+function getChanges (fromList, toList, keyFunc) {
+  const prevEntries = new Map(fromList.map(item => [keyFunc(item), item]));
+  const insert = [];
+  const update = [];
+  for (const item of toList) {
+    const key = keyFunc(item);
+    if (prevEntries.has(key)) {
+      update.push(item);
+      prevEntries.delete(key);
+    } else {
+      insert.push(item);
+    }
+  }
+  const remove = Array.from(prevEntries.values());
+  return { insert, update, remove }
 }
 
-const debug = Debug__default['default']('pixprices:publish');
-async function publishPrices (opts) {
-  const { tempfile, s3file } = opts;
-  const items = await getAll(opts);
-  const data = items.reduce((data, rec) => {
-    const { _id, code, time, ...rest } = rec;
-    data[code] = { code, ...rest, time: +time };
-    return data
-  }, {});
-  await promises.writeFile(tempfile, JSON.stringify(data), 'utf8');
-  await s3js.upload(tempfile, s3file);
-  await promises.unlink(tempfile);
-  debug('%d prices uploaded to %s', items.length, s3file);
+const DEFAULT_CREDENTIALS = process.cwd() + '/credentials.json';
+const getGoogleDrive = once(async function getGoogleDrive (
+  options = {}
+) {
+  const { credentials = DEFAULT_CREDENTIALS } = options;
+  const driveApi = await Promise.resolve().then(function () { return /*#__PURE__*/_interopNamespace(require('@googleapis/drive')); });
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = credentials;
+  const auth = new driveApi.auth.GoogleAuth({
+    scopes: ['https://www.googleapis.com/auth/drive.readonly']
+  });
+  const authClient = await auth.getClient();
+  const drive = await driveApi.drive({
+    version: 'v3',
+    auth: authClient
+  });
+  return drive
+});
+const getGoogleSheets = once(async function getGoogleSheets (
+  options = {}
+) {
+  const { credentials = DEFAULT_CREDENTIALS } = options;
+  const sheetsApi = await Promise.resolve().then(function () { return /*#__PURE__*/_interopNamespace(require('@googleapis/sheets')); });
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = credentials;
+  const auth = new sheetsApi.auth.GoogleAuth({
+    scopes: ['https://www.googleapis.com/auth/spreadsheets']
+  });
+  const authClient = await auth.getClient();
+  const sheets = await sheetsApi.sheets({
+    version: 'v4',
+    auth: authClient
+  });
+  return sheets
+});
+
+const debug = Debug__default['default']('pixprices:sheets');
+const INVESTMENTS_FOLDER = '0B_zDokw1k2L7VjBGcExJeUxLSlE';
+const locateSheets = once(async function locateSheets () {
+  const drive = await getGoogleDrive();
+  const response = await drive.files.list({
+    q: `'${INVESTMENTS_FOLDER}' in parents`
+  });
+  if (response.status !== 200) {
+    throw new Error(`bad result: ${response}`)
+  }
+  return response.data.files.reduce((m, item) => {
+    m.set(item.name, item);
+    return m
+  }, new Map())
+});
+async function getPortfolioSheet () {
+  const data = await getSheetData('Portfolio', 'Investments!A:AM');
+  debug('Portfolio data retrieved');
+  return data
+}
+async function updatePositionsSheet (data) {
+  const currData = await getSheetData('Positions', 'Positions!A2:H');
+  const lastRow = findLastRow(currData);
+  const firstRow = data[0];
+  while (data.length < lastRow + 1) {
+    data.push(firstRow.map(x => ''));
+  }
+  const range = `Positions!A2:H${data.length + 1}`;
+  await putSheetData('Positions', range, data);
+  await putSheetData('Positions', 'Positions!J1', [
+    [jsDateToSerialDate(new Date())]
+  ]);
+  debug('Positions data updated');
+}
+async function getSheetData (sheetName, rangeName) {
+  const sheets = await getGoogleSheets();
+  const sheetList = await locateSheets();
+  const sheetId = sheetList.get(sheetName).id;
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: rangeName,
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  if (response.status !== 200) {
+    const err = new Error(`Failed to get ${sheetName}`);
+    err.response = response;
+    throw err
+  }
+  return response.data.values
+}
+async function putSheetData (sheetName, rangeName, data) {
+  const sheets = await getGoogleSheets();
+  const sheetList = await locateSheets();
+  const sheetId = sheetList.get(sheetName).id;
+  const response = await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: rangeName,
+    valueInputOption: 'RAW',
+    resource: {
+      range: rangeName,
+      majorDimension: 'ROWS',
+      values: data
+    }
+  });
+  if (response.status !== 200) {
+    const err = new Error(`Failed to put ${sheetName}`);
+    err.response = response;
+    throw err
+  }
+}
+function findLastRow (rows) {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].some(Boolean)) {
+      return i
+    }
+  }
+  return -1
 }
 
 const prog = sade__default['default']('pixprices');
 prog.version(version);
 prog
-  .command('fetch', 'fetch prices')
-  .option('--index', 'index to fetch')
-  .option('--sector', 'sector to fetch')
-  .option('--stock', 'stock to fetch')
-  .option('--database', 'database name', 'prices.db')
-  .option('--tempfile', 'transfer temp file', '/tmp/prices.json')
-  .option(
-    '--s3file',
-    'publish destination',
-    's3://finance-readersludlow/public/prices'
-  )
-  .option('--purge', 'purge period')
-  .option('--publish', 'publish current prices')
-  .action(wrap(fetchPrices));
-prog.parse(process.argv, {
-  string: ['purge'],
-  boolean: ['publish']
-});
-async function fetchPrices (options) {
-  const { index, sector, stock, purge, publish } = options;
-  const items = [];
-  for (const name of toArr(index)) {
-    items.push(...(await fetchIndex(name)));
+  .command('update', 'update data')
+  .option('--get-portfolio', 'update from portfolio sheet')
+  .option('--fetch-prices', 'fetch prices from LSE')
+  .option('--update-positions', 'update positions sheet')
+  .action(wrap(update));
+prog.parse(process.argv);
+async function update (options) {
+  const portfolio = await Portfolio.deserialize();
+  if (options['get-portfolio']) {
+    const sheet = await getPortfolioSheet();
+    portfolio.loadStocksFromSheet(sheet);
+    portfolio.loadPositionsFromSheet(sheet);
   }
-  for (const name of toArr(sector)) {
-    items.push(...(await fetchSector(name)));
+  if (options['fetch-prices']) {
+    await portfolio.fetchPrices();
   }
-  for (const name of toArr(stock)) {
-    items.push(await fetchPrice(name));
-  }
-  if (items.length) {
-    await writePrices(items, options);
-  }
-  if (purge) {
-    await purgeOldPrices(purge, options);
-  }
-  if (publish) {
-    await publishPrices(options);
+  await portfolio.serialize();
+  if (options['update-positions']) {
+    await updatePositionsSheet(portfolio.getPositionsSheet());
   }
 }

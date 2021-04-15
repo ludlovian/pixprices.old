@@ -14,7 +14,6 @@ const USER_AGENT =
 export async function fetchIndex (indexName) {
   // ftse-all-share
   // ftse-aim-all-share
-  debug('index %s', indexName)
   const url = `https://www.lse.co.uk/share-prices/indices/${indexName}/constituents.html`
   return fetchCollection(
     url,
@@ -25,7 +24,6 @@ export async function fetchIndex (indexName) {
 
 export async function fetchSector (sectorName) {
   // alternative-investment-instruments
-  debug('sector %s', sectorName)
   const url = `https://www.lse.co.uk/share-prices/sectors/${sectorName}/constituents.html`
   return fetchCollection(url, 'sp-sectors__table', `lse:sector:${sectorName}`)
 }
@@ -53,22 +51,21 @@ async function fetchCollection (url, collClass, source) {
       const { name, ticker } = extractNameAndTicker(values[0])
       const price = extractNumber(values[1])
       items.push({
-        code: ticker,
+        ticker,
         name,
         price,
         time: now,
         source
       })
     })
-  debug('Read %d items', items.length)
+  debug('Read %d items from %s', items.length, source)
   return items
 }
 
-export async function fetchPrice (code) {
-  debug('share %s', code)
+export async function fetchPrice (ticker) {
   await delay(1000)
 
-  const url = `https://www.lse.co.uk/SharePrice.asp?shareprice=${code}`
+  const url = `https://www.lse.co.uk/SharePrice.asp?shareprice=${ticker}`
   const now = new Date()
   const fetchOpts = {
     headers: {
@@ -79,7 +76,7 @@ export async function fetchPrice (code) {
   const $ = cheerio.load(html)
 
   const item = {
-    code,
+    ticker,
     time: now,
     source: 'lse:share'
   }
@@ -92,6 +89,9 @@ export async function fetchPrice (code) {
       .first()
       .text()
   )
+
+  debug('fetched %s from lse:share', ticker)
+
   return item
 }
 

@@ -4,60 +4,39 @@ import sade from 'sade'
 
 import { version } from '../package.json'
 
-import { fetchIndex, fetchSector, fetchPrice } from './fetch-lse'
-import { purgeOldPrices, writePrices } from './db'
-import { publishPrices } from './publish'
-import { wrap, toArr } from './util'
+import Portfolio from './portfolio'
+import { getPortfolioSheet, updatePositionsSheet } from './sheets'
+import { wrap } from './util'
 
 const prog = sade('pixprices')
 
 prog.version(version)
 
 prog
-  .command('fetch', 'fetch prices')
-  .option('--index', 'index to fetch')
-  .option('--sector', 'sector to fetch')
-  .option('--stock', 'stock to fetch')
-  .option('--database', 'database name', 'prices.db')
-  .option('--tempfile', 'transfer temp file', '/tmp/prices.json')
-  .option(
-    '--s3file',
-    'publish destination',
-    's3://finance-readersludlow/public/prices'
-  )
-  .option('--purge', 'purge period')
-  .option('--publish', 'publish current prices')
-  .action(wrap(fetchPrices))
+  .command('update', 'update data')
+  .option('--get-portfolio', 'update from portfolio sheet')
+  .option('--fetch-prices', 'fetch prices from LSE')
+  .option('--update-positions', 'update positions sheet')
+  .action(wrap(update))
 
-prog.parse(process.argv, {
-  string: ['purge'],
-  boolean: ['publish']
-})
+prog.parse(process.argv)
 
-async function fetchPrices (options) {
-  const { index, sector, stock, purge, publish } = options
-  const items = []
-  for (const name of toArr(index)) {
-    items.push(...(await fetchIndex(name)))
+async function update (options) {
+  const portfolio = await Portfolio.deserialize()
+
+  if (options['get-portfolio']) {
+    const sheet = await getPortfolioSheet()
+    portfolio.loadStocksFromSheet(sheet)
+    portfolio.loadPositionsFromSheet(sheet)
   }
 
-  for (const name of toArr(sector)) {
-    items.push(...(await fetchSector(name)))
+  if (options['fetch-prices']) {
+    await portfolio.fetchPrices()
   }
 
-  for (const name of toArr(stock)) {
-    items.push(await fetchPrice(name))
-  }
+  await portfolio.serialize()
 
-  if (items.length) {
-    await writePrices(items, options)
-  }
-
-  if (purge) {
-    await purgeOldPrices(purge, options)
-  }
-
-  if (publish) {
-    await publishPrices(options)
+  if (options['update-positions']) {
+    await updatePositionsSheet(portfolio.getPositionsSheet())
   }
 }
