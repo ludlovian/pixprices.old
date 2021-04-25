@@ -668,9 +668,7 @@ async function updateRange ({ sheet, range, data, ...options }) {
   const sheets = await getSheetAPI(options);
 
   data = data.map(row =>
-    Array.isArray(row)
-      ? row.map(val => (val instanceof Date ? jsDateToSerialDate(val) : val))
-      : row
+    row.map(val => (val instanceof Date ? jsDateToSerialDate(val) : val))
   );
 
   const query = {
@@ -810,7 +808,7 @@ function findLastRow (rows) {
   return -1
 }
 
-const version = '1.0.1';
+const version = '1.1.0';
 
 const prog = sade('pixprices');
 
