@@ -2,11 +2,11 @@
 
 import sade from 'sade'
 
-import { version } from '../package.json'
+import Portfolio from './portfolio.mjs'
+import { getPortfolioSheet, updatePositionsSheet } from './sheets.mjs'
+import { wrap } from './util.mjs'
 
-import Portfolio from './portfolio'
-import { getPortfolioSheet, updatePositionsSheet } from './sheets'
-import { wrap } from './util'
+const version = '__VERSION__'
 
 const prog = sade('pixprices')
 

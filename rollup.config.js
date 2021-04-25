@@ -1,31 +1,30 @@
-import { terser } from 'rollup-plugin-terser'
-import cleanup from 'rollup-plugin-cleanup'
-import json from '@rollup/plugin-json'
-import commonjs from '@rollup/plugin-commonjs'
+import resolve from '@rollup/plugin-node-resolve'
+import replace from '@rollup/plugin-replace'
 
 export default {
-  input: 'src/main.js',
+  input: 'src/main.mjs',
   external: [
-    'fs/promises',
     'sade',
     'httpie',
     'cheerio',
     'debug',
     'ms',
-    'jsdbd',
     '@googleapis/sheets',
     '@googleapis/drive'
   ],
   plugins: [
-    commonjs(),
-    json(),
-    cleanup(),
-    process.env.NODE_ENV === 'production' && terser()
+    resolve(),
+    replace({
+      preventAssignment: true,
+      values: {
+        __VERSION__: process.env.npm_package_version
+      }
+    })
   ],
   output: [
     {
-      file: 'dist/pixprices',
-      format: 'cjs',
+      file: 'dist/pixprices.mjs',
+      format: 'esm',
       sourcemap: false,
       banner: '#!/usr/bin/env node'
     }

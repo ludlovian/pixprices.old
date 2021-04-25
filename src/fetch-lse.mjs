@@ -4,7 +4,7 @@ import cheerio from 'cheerio'
 import { get } from 'httpie'
 import Debug from 'debug'
 
-import { delay } from './util'
+import { delay } from './util.mjs'
 
 const debug = Debug('pixprices:fetch-lse')
 

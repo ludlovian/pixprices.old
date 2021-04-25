@@ -1,9 +1,7 @@
-'use strict'
-
 import Debug from 'debug'
 import Database from 'jsdbd'
 
-import { fetchIndex, fetchSector, fetchPrice } from './fetch-lse'
+import { fetchIndex, fetchSector, fetchPrice } from './fetch-lse.mjs'
 
 const debug = Debug('pixprices:portfolio')
 
