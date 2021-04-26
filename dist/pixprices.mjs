@@ -343,16 +343,16 @@ async function getPortfolioSheet () {
 }
 
 async function updatePositionsSheet (data) {
-  const currData = await getSheetData('Positions', 'Positions!A2:H');
+  const currData = await getSheetData('Positions', 'Positions!A2:I');
   const lastRow = findLastRow(currData);
   const firstRow = data[0];
   while (data.length < lastRow + 1) {
     data.push(firstRow.map(x => ''));
   }
 
-  const range = `Positions!A2:H${data.length + 1}`;
+  const range = `Positions!A2:I${data.length + 1}`;
   await putSheetData('Positions', range, data);
-  await putSheetData('Positions', 'Positions!J1', [[new Date()]]);
+  await putSheetData('Positions', 'Positions!K1', [[new Date()]]);
   debug$3('Positions data updated');
 }
 
@@ -640,12 +640,12 @@ function getPositionsSheet (portfolio) {
   }
 
   rows.sort((x, y) => {
-    if (x.ticker < y.ticker) return -1
-    if (x.ticker > y.ticker) return 1
-    if (x.who < y.who) return -1
-    if (x.who > y.who) return 1
-    if (x.account < y.account) return -1
-    if (x.account > y.account) return 1
+    if (x[0] < y[0]) return -1
+    if (x[0] > y[0]) return 1
+    if (x[1] < y[1]) return -1
+    if (x[1] > y[1]) return 1
+    if (x[2] < y[2]) return -1
+    if (x[2] > y[2]) return 1
     return 0
   });
 
@@ -668,10 +668,11 @@ function makePositionRow ({ position, stock }) {
     who,
     account,
     qty,
-    price,
-    dividend,
-    Math.round(qty * price) / 100,
-    dividend ? Math.round(qty * dividend) / 100 : undefined
+    price || '',
+    dividend || '',
+    dividend && price ? dividend / price : '',
+    Math.round(qty * price) / 100 || '',
+    dividend ? Math.round(qty * dividend) / 100 : ''
   ]
 }
 
@@ -694,7 +695,7 @@ async function update (options) {
   }
 }
 
-const version = '1.1.0';
+const version = '1.2.0';
 
 const prog = sade('pixprices');
 
