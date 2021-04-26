@@ -18,16 +18,16 @@ export async function getPortfolioSheet () {
 }
 
 export async function updatePositionsSheet (data) {
-  const currData = await getSheetData('Positions', 'Positions!A2:H')
+  const currData = await getSheetData('Positions', 'Positions!A2:I')
   const lastRow = findLastRow(currData)
   const firstRow = data[0]
   while (data.length < lastRow + 1) {
     data.push(firstRow.map(x => ''))
   }
 
-  const range = `Positions!A2:H${data.length + 1}`
+  const range = `Positions!A2:I${data.length + 1}`
   await putSheetData('Positions', range, data)
-  await putSheetData('Positions', 'Positions!J1', [[new Date()]])
+  await putSheetData('Positions', 'Positions!K1', [[new Date()]])
   debug('Positions data updated')
 }
 

@@ -1,623 +1,10 @@
 #!/usr/bin/env node
 import sade from 'sade';
 import Debug from 'debug';
-import { request } from 'http';
-import 'net';
 import cheerio from 'cheerio';
 import { get } from 'httpie';
 
-function deserialize (obj) {
-  if (Array.isArray(obj)) return Object.freeze(obj.map(deserialize))
-  if (obj === null || typeof obj !== 'object') return obj
-  if ('$$date$$' in obj) return Object.freeze(new Date(obj.$$date$$))
-  if ('$$undefined$$' in obj) return undefined
-  return Object.freeze(
-    Object.entries(obj).reduce(
-      (o, [k, v]) => ({ ...o, [k]: deserialize(v) }),
-      {}
-    )
-  )
-}
-
-function serialize (obj) {
-  if (Array.isArray(obj)) return obj.map(serialize)
-  if (obj === undefined) return { $$undefined$$: true }
-  if (obj instanceof Date) return { $$date$$: obj.getTime() }
-  if (obj === null || typeof obj !== 'object') return obj
-  return Object.entries(obj).reduce(
-    (o, [k, v]) => ({ ...o, [k]: serialize(v) }),
-    {}
-  )
-}
-
-const jsonrpc = '2.0';
-
-const knownErrors = {};
-
-class RpcClient {
-  constructor (options) {
-    this.options = options;
-  }
-
-  async call (method, ...params) {
-    const body = JSON.stringify({
-      jsonrpc,
-      method,
-      params: serialize(params)
-    });
-
-    const options = {
-      ...this.options,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json;charset=utf-8',
-        'Content-Length': Buffer.byteLength(body),
-        Connection: 'keep-alive'
-      }
-    };
-    const res = await makeRequest(options, body);
-    const data = await readResponse(res);
-
-    if (data.error) {
-      const errDetails = deserialize(data.error);
-      const Factory = RpcClient.error(errDetails.name);
-      throw new Factory(errDetails)
-    }
-
-    return deserialize(data.result)
-  }
-
-  static error (name) {
-    let constructor = knownErrors[name];
-    if (constructor) return constructor
-    constructor = makeErrorClass(name);
-    knownErrors[name] = constructor;
-    return constructor
-  }
-}
-
-function makeRequest (options, body) {
-  return new Promise((resolve, reject) => {
-    const req = request(options, resolve);
-    req.once('error', reject);
-    req.write(body);
-    req.end();
-  })
-}
-
-async function readResponse (res) {
-  res.setEncoding('utf8');
-  let data = '';
-  for await (const chunk of res) {
-    data += chunk;
-  }
-  return JSON.parse(data)
-}
-
-function makeErrorClass (name) {
-  function fn (data) {
-    const { name, ...rest } = data;
-    Error.call(this);
-    Error.captureStackTrace(this, this.constructor);
-    Object.assign(this, rest);
-  }
-
-  // reset the name of the constructor
-  Object.defineProperties(fn, {
-    name: { value: name, configurable: true }
-  });
-
-  // make it inherit from error
-  fn.prototype = Object.create(Error.prototype, {
-    name: { value: name, configurable: true },
-    constructor: { value: fn, configurable: true }
-  });
-
-  return fn
-}
-
-const jsdbMethods = new Set([
-  'ensureIndex',
-  'deleteIndex',
-  'insert',
-  'update',
-  'upsert',
-  'delete',
-  'find',
-  'findOne',
-  'getAll',
-  'compact',
-  'reload'
-]);
-
-const jsdbErrors = new Set(['KeyViolation', 'NotExists', 'NoIndex']);
-
-let client;
-
-const staticMethods = ['status', 'housekeep', 'clear', 'shutdown'];
-
-class Database {
-  constructor (opts) {
-    /* c8 ignore next 2 */
-    if (typeof opts === 'string') opts = { filename: opts };
-    const { port = 39720, ...options } = opts;
-    this.options = options;
-    if (!client) {
-      client = new RpcClient({ port });
-      for (const method of staticMethods) {
-        Database[method] = client.call.bind(client, method);
-      }
-    }
-    const { filename } = this.options;
-    for (const method of jsdbMethods.values()) {
-      this[method] = client.call.bind(client, 'dispatch', filename, method);
-    }
-  }
-
-  async check () {
-    try {
-      await client.call('status');
-      /* c8 ignore next 6 */
-    } catch (err) {
-      if (err.code === 'ECONNREFUSED') {
-        throw new NoServer(err)
-      } else {
-        throw err
-      }
-    }
-  }
-
-  static _reset () {
-    client = undefined;
-  }
-}
-
-class NoServer extends Error {
-  constructor (err) {
-    super('Could not find jsdbd');
-    Object.assign(this, err, { client });
-  }
-}
-
-Database.NoServer = NoServer;
-
-jsdbErrors.forEach(name => {
-  Database[name] = RpcClient.error(name);
-});
-
-function delay (ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function wrap (fn) {
-  return (...args) =>
-    Promise.resolve(fn(...args)).catch(err => {
-      console.error(err);
-      process.exit(1);
-    })
-}
-
 function once$1 (fn) {
-  function f (...args) {
-    if (f.called) return f.value
-    f.value = fn(...args);
-    f.called = true;
-    return f.value
-  }
-
-  if (fn.name) {
-    Object.defineProperty(f, 'name', { value: fn.name, configurable: true });
-  }
-
-  return f
-}
-
-const debug$2 = Debug('pixprices:fetch-lse');
-
-const USER_AGENT =
-  'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36';
-
-async function fetchIndex (indexName) {
-  // ftse-all-share
-  // ftse-aim-all-share
-  const url = `https://www.lse.co.uk/share-prices/indices/${indexName}/constituents.html`;
-  return fetchCollection(
-    url,
-    'sp-constituents__table',
-    `lse:index:${indexName}`
-  )
-}
-
-async function fetchSector (sectorName) {
-  // alternative-investment-instruments
-  const url = `https://www.lse.co.uk/share-prices/sectors/${sectorName}/constituents.html`;
-  return fetchCollection(url, 'sp-sectors__table', `lse:sector:${sectorName}`)
-}
-
-async function fetchCollection (url, collClass, source) {
-  await delay(1000);
-
-  const now = new Date();
-  const fetchOpts = {
-    headers: {
-      'User-Agent': USER_AGENT
-    }
-  };
-  const { data: html } = await get(url, fetchOpts);
-  const $ = cheerio.load(html);
-  const items = [];
-  $(`table.${collClass} tr`)
-    .has('td')
-    .each((i, tr) => {
-      const values = [];
-      $('td', tr).each((j, td) => {
-        values.push($(td).text());
-      });
-
-      const { name, ticker } = extractNameAndTicker(values[0]);
-      const price = extractNumber(values[1]);
-      items.push({
-        ticker,
-        name,
-        price,
-        time: now,
-        source
-      });
-    });
-  debug$2('Read %d items from %s', items.length, source);
-  return items
-}
-
-async function fetchPrice (ticker) {
-  await delay(1000);
-
-  const url = `https://www.lse.co.uk/SharePrice.asp?shareprice=${ticker}`;
-  const now = new Date();
-  const fetchOpts = {
-    headers: {
-      'User-Agent': USER_AGENT
-    }
-  };
-  const { data: html } = await get(url, fetchOpts);
-  const $ = cheerio.load(html);
-
-  const item = {
-    ticker,
-    time: now,
-    source: 'lse:share'
-  };
-
-  item.name = $('h1.title__title')
-    .text()
-    .replace(/ Share Price.*/, '');
-  item.price = extractNumber(
-    $('span[data-field="BID"]')
-      .first()
-      .text()
-  );
-
-  debug$2('fetched %s from lse:share', ticker);
-
-  return item
-}
-
-function extractNameAndTicker (text) {
-  const re = /(.*)\s+\(([A-Z0-9.]{2,4})\)$/;
-  const m = re.exec(text);
-  if (!m) return {}
-  const [, name, ticker] = m;
-  return { name, ticker }
-}
-
-function extractNumber (text) {
-  return parseFloat(text.replace(/,/g, ''))
-}
-
-const debug$1 = Debug('pixprices:portfolio');
-
-const DEFAULT_TICKER_COLUMN = 10; // column K
-const DEFAULT_ACCOUNT_COLUMN = 0; // column A
-const DEFAULT_ACCOUNT_LIST =
-  'AJL,ISA;RSGG,ISA;AJL,Dealing;RSGG,Dealing;AJL,SIPP;RSGG,SIPP;RSGG,SIPP2';
-const DEFAULT_DIV_COLUMN = 26; // column AA
-
-class Portfolio {
-  constructor () {
-    this.stocks = new Stocks();
-    this.positions = new Positions();
-  }
-
-  static async deserialize () {
-    const p = new Portfolio();
-    {
-      const db = new Database('stocks.db');
-      for (const stock of await db.getAll()) {
-        Object.assign(p.stocks.get(stock.ticker), stock);
-      }
-    }
-    {
-      const db = new Database('positions.db');
-      for (const pos of await db.getAll()) {
-        Object.assign(p.positions.get(pos), pos);
-      }
-    }
-
-    debug$1('portfolio loaded from database');
-    return p
-  }
-
-  async serialize () {
-    {
-      const db = new Database('stocks.db');
-      await db.ensureIndex({ fieldName: 'ticker', unique: true });
-
-      const { insert, update, remove } = getChanges(
-        await db.getAll(),
-        Array.from(this.stocks.values()),
-        x => x.ticker
-      );
-      await db.insert(insert);
-      await db.update(update);
-      await db.delete(remove);
-      await db.compact();
-      debug$1(
-        'stocks wrtten to db (I:%d, U:%d, D:%d)',
-        insert.length,
-        update.length,
-        remove.length
-      );
-    }
-
-    {
-      const db = new Database('positions.db');
-      await db.ensureIndex({ fieldName: 'who' });
-      await db.ensureIndex({ fieldName: 'account' });
-      await db.ensureIndex({ fieldName: 'ticker' });
-      const { insert, update, remove } = getChanges(
-        await db.getAll(),
-        Array.from(this.positions.values()),
-        keyToString
-      );
-
-      await db.insert(insert);
-      await db.update(update);
-      await db.delete(remove);
-      await db.compact();
-      debug$1(
-        'positions wrtten to db (I:%d, U:%d, D:%d)',
-        insert.length,
-        update.length,
-        remove.length
-      );
-    }
-  }
-
-  loadStocksFromSheet (rangeData, options = {}) {
-    const {
-      tickerColumn = DEFAULT_TICKER_COLUMN,
-      divColumn = DEFAULT_DIV_COLUMN
-    } = options;
-
-    const old = new Set(this.stocks.values());
-
-    for (const row of rangeData) {
-      const ticker = row[tickerColumn];
-      if (!ticker) continue
-      const stock = this.stocks.get(ticker);
-      old.delete(stock);
-      const div = row[divColumn];
-      if (!div || typeof div !== 'number') {
-        stock.dividend = undefined;
-      } else {
-        stock.dividend = Math.round(div * 1e5) / 1e5;
-      }
-    }
-
-    for (const stock of old.values()) {
-      this.stocks.delete(stock.ticker);
-    }
-
-    debug$1('stocks refreshed from piggy sheet');
-  }
-
-  loadPositionsFromSheet (rangeData, options = {}) {
-    const {
-      tickerColumn = DEFAULT_TICKER_COLUMN,
-      accountStartColumn = DEFAULT_ACCOUNT_COLUMN,
-      accountList = DEFAULT_ACCOUNT_LIST
-    } = options;
-
-    const accounts = accountList.split(';').map(code => {
-      const [who, account] = code.split(',');
-      return { who, account }
-    });
-
-    const old = new Set(this.positions.values());
-
-    for (const row of rangeData) {
-      const ticker = row[tickerColumn];
-      if (!ticker) continue
-      const qtys = row.slice(
-        accountStartColumn,
-        accountStartColumn + accounts.length
-      );
-      for (const [i, qty] of qtys.entries()) {
-        if (!qty || typeof qty !== 'number') continue
-        const pos = this.positions.get({ ...accounts[i], ticker });
-        pos.qty = qty;
-        old.delete(pos);
-      }
-    }
-
-    for (const pos of old) {
-      this.positions.delete(pos);
-    }
-
-    debug$1('positions refreshed from piggy sheet');
-  }
-
-  async fetchPrices () {
-    const need = new Map(
-      Array.from(this.stocks.values()).map(stock => [stock.ticker, stock])
-    );
-
-    // first try to load prices via collections - indices and sectors
-
-    const attempts = [
-      ['ftse-all-share', fetchIndex],
-      ['ftse-aim-all-share', fetchIndex],
-      ['alternative-investment-instruments', fetchSector]
-    ];
-
-    for (const [name, fetchFunc] of attempts) {
-      const items = await fetchFunc(name);
-      let count = 0;
-      for (const item of items) {
-        const ticker = item.ticker.replace(/\.+$/, '');
-        const stock = need.get(ticker);
-        if (!stock) continue
-        need.delete(ticker);
-        count++;
-        Object.assign(stock, {
-          name: item.name,
-          price: {
-            value: item.price,
-            source: item.source,
-            time: item.time
-          }
-        });
-      }
-      debug$1('%d prices from %s', count, name);
-      if (!need.size) break
-    }
-
-    // now pick up the remaining ones
-    for (const stock of need.values()) {
-      const item = await fetchPrice(stock.ticker.padEnd(3, '.'));
-      Object.assign(stock, {
-        name: item.name,
-        price: {
-          value: item.price,
-          source: item.source,
-          time: item.time
-        }
-      });
-    }
-
-    if (need.size) {
-      debug$1(
-        '%d prices individually: %s',
-        need.size,
-        Array.from(need.values())
-          .map(s => s.ticker)
-          .join(', ')
-      );
-    }
-  }
-
-  getPositionsSheet () {
-    const rows = [];
-    for (const pos of this.positions.values()) {
-      const { who, account, ticker, qty } = pos;
-      if (!qty) continue
-
-      const stock = this.stocks.get(ticker);
-      const {
-        dividend,
-        price: { value: price }
-      } = stock;
-      rows.push([
-        ticker,
-        who,
-        account,
-        qty,
-        price,
-        dividend,
-        Math.round(qty * price) / 100,
-        dividend ? Math.round(qty * dividend * 100) / 100 : undefined
-      ]);
-    }
-
-    return rows
-  }
-}
-
-class Stocks {
-  constructor () {
-    this._map = new Map();
-  }
-
-  get (key) {
-    let s = this._map.get(key);
-    if (s) return s
-    s = Object.assign(new Stock(), { ticker: key });
-    this._map.set(key, s);
-    return s
-  }
-
-  delete (key) {
-    this._map.delete(key);
-  }
-
-  values () {
-    return this._map.values()
-  }
-}
-
-class Positions {
-  constructor () {
-    this._map = new Map();
-  }
-
-  get (key) {
-    const s = keyToString(key);
-
-    let pos = this._map.get(s);
-    if (pos) return pos
-
-    pos = Object.assign(new Position(), { ...key, qty: 0 });
-    this._map.set(s, pos);
-    return pos
-  }
-
-  delete (key) {
-    this._map.delete(keyToString(key));
-  }
-
-  values () {
-    return this._map.values()
-  }
-}
-
-class Position {}
-class Stock {}
-
-function keyToString ({ who, account, ticker }) {
-  return `${who}_${account}_${ticker}`
-}
-
-function getChanges (fromList, toList, keyFunc) {
-  const prevEntries = new Map(fromList.map(item => [keyFunc(item), item]));
-
-  const insert = [];
-  const update = [];
-
-  for (const item of toList) {
-    const key = keyFunc(item);
-    if (prevEntries.has(key)) {
-      update.push(item);
-      prevEntries.delete(key);
-    } else {
-      insert.push(item);
-    }
-  }
-
-  const remove = Array.from(prevEntries.values());
-
-  return { insert, update, remove }
-}
-
-function once (fn) {
   function f (...args) {
     if (f.called) return f.value
     f.value = fn(...args);
@@ -639,6 +26,180 @@ function jsDateToSerialDate (dt) {
   const epochStart = 25569;
   return epochStart + localDays
 }
+
+let KEY;
+
+class Table$1 {
+  constructor (kind) {
+    this.kind = kind;
+  }
+
+  async * fetch () {
+    const datastore = await getDatastoreAPI();
+    const query = datastore.createQuery(this.kind);
+    for await (const entity of query.runStream()) {
+      yield entity;
+    }
+  }
+
+  async fetchAll (options) {
+    const entities = [];
+    for await (const entity of this.fetch(options)) {
+      entities.push(entity);
+    }
+    return entities
+  }
+
+  async insert (entities) {
+    const datastore = await getDatastoreAPI();
+    entities = verifyEntities(entities, { kind: this.kind, datastore });
+    await datastore.insert(entities);
+  }
+
+  async upsert (entities) {
+    const datastore = await getDatastoreAPI();
+    entities = verifyEntities(entities, { kind: this.kind, datastore });
+    await datastore.upsert(entities);
+  }
+
+  async delete (entities) {
+    const datastore = await getDatastoreAPI();
+    entities = verifyEntities(entities, { kind: this.kind, datastore });
+    await datastore.delete(entities.map(e => e[datastore.KEY]));
+  }
+}
+
+function getEntityKey (entity) {
+  return entity[KEY]
+}
+
+const getDatastoreAPI = once$1(async function getDatastoreAPI ({
+  credentials = 'credentials.json'
+} = {}) {
+  const { Datastore } = await import('@google-cloud/datastore');
+  if (credentials) {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = credentials;
+  }
+
+  const datastore = new Datastore();
+  KEY = datastore.KEY;
+  return datastore
+});
+
+function verifyEntities (arr, { kind, datastore }) {
+  if (!Array.isArray(arr)) arr = [arr];
+  for (const entity of arr) {
+    if (!(datastore.KEY in entity)) {
+      if ('id' in entity) {
+        entity[datastore.KEY] = datastore.key([kind, entity.id]);
+        delete entity.id;
+      } else {
+        entity[datastore.KEY] = datastore.key([kind]);
+      }
+    }
+  }
+  return arr
+}
+
+const debug$4 = Debug('pixprices:portfolio');
+
+class Portfolio {
+  constructor () {
+    this.stocks = new Stocks();
+    this.positions = new Positions();
+  }
+
+  async load () {
+    await Promise.all([this.stocks.load(), this.positions.load()]);
+  }
+
+  async save () {
+    await Promise.all([this.stocks.save(), this.positions.save()]);
+  }
+}
+
+class Table {
+  constructor (name) {
+    this.name = name;
+    this._table = new Table$1(name);
+    this._map = new Map();
+  }
+
+  async load () {
+    const entities = await this._table.fetchAll();
+    debug$4('loaded %d entities from %s', entities.length, this.name);
+    this._map = new Map(entities.map(entity => [this.getKey(entity), entity]));
+    this._prevEntities = new Map(
+      entities.map(entity => [getEntityKey(entity), entity])
+    );
+  }
+
+  async save () {
+    if (this._map.size) {
+      await this._table.upsert(Array.from(this._map.values()));
+      debug$4('upserted %d values in %s', this._map.size, this.name);
+    }
+
+    // build a list of old entities to delete
+    this._map.forEach(entity => this._prevEntities.delete(getEntityKey(entity)));
+    if (this._prevEntities.size) {
+      await this._table.delete(Array.from(this._prevEntities.values()));
+      debug$4('deleted %d values in %s', this._prevEntities.size, this.name);
+      this._prevEntities.clear();
+    }
+  }
+
+  get (keyData, Factory) {
+    // returns an exsiting entity, or creates a new one
+    const key = this.getKey(keyData);
+    let entity = this._map.get(key);
+    if (entity) return entity
+    entity = Object.assign(Factory ? new Factory() : {}, keyData);
+    this._map.set(key, entity);
+    return entity
+  }
+
+  delete (keyData) {
+    const key = this.getKey(keyData);
+    this._map.delete(key);
+  }
+
+  values () {
+    return this._map.values()
+  }
+}
+
+class Stocks extends Table {
+  constructor () {
+    super('Stock');
+  }
+
+  getKey ({ ticker }) {
+    return ticker
+  }
+
+  get (keyData) {
+    return super.get(keyData, Stock)
+  }
+}
+
+class Stock {}
+
+class Positions extends Table {
+  constructor () {
+    super('Position');
+  }
+
+  getKey ({ who, account, ticker }) {
+    return `${who}_${account}_${ticker}`
+  }
+
+  get (keyData) {
+    return super.get(keyData, Position)
+  }
+}
+
+class Position {}
 
 const SCOPES$1 = {
   rw: ['https://www.googleapis.com/auth/spreadsheets'],
@@ -688,7 +249,7 @@ async function updateRange ({ sheet, range, data, ...options }) {
   }
 }
 
-const getSheetAPI = once(async function getSheetAPI ({
+const getSheetAPI = once$1(async function getSheetAPI ({
   credentials = 'credentials.json',
   scopes = SCOPES$1.ro
 } = {}) {
@@ -738,7 +299,7 @@ async function * list ({ folder, ...options }) {
   }
 }
 
-const getDriveAPI = once(async function getDriveAPI ({
+const getDriveAPI = once$1(async function getDriveAPI ({
   credentials = 'credentials.json',
   scopes = SCOPES.ro
 } = {}) {
@@ -752,13 +313,32 @@ const getDriveAPI = once(async function getDriveAPI ({
   return driveApi.drive({ version: 'v3', auth: authClient })
 });
 
-const debug = Debug('pixprices:sheets');
+function delay (ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function once (fn) {
+  function f (...args) {
+    if (f.called) return f.value
+    f.value = fn(...args);
+    f.called = true;
+    return f.value
+  }
+
+  if (fn.name) {
+    Object.defineProperty(f, 'name', { value: fn.name, configurable: true });
+  }
+
+  return f
+}
+
+const debug$3 = Debug('pixprices:sheets');
 
 const INVESTMENTS_FOLDER = '0B_zDokw1k2L7VjBGcExJeUxLSlE';
 
 async function getPortfolioSheet () {
   const data = await getSheetData('Portfolio', 'Investments!A:AM');
-  debug('Portfolio data retrieved');
+  debug$3('Portfolio data retrieved');
   return data
 }
 
@@ -773,7 +353,7 @@ async function updatePositionsSheet (data) {
   const range = `Positions!A2:H${data.length + 1}`;
   await putSheetData('Positions', range, data);
   await putSheetData('Positions', 'Positions!J1', [[new Date()]]);
-  debug('Positions data updated');
+  debug$3('Positions data updated');
 }
 
 async function getSheetData (sheetName, range) {
@@ -790,7 +370,7 @@ async function putSheetData (sheetName, range, data) {
   await updateRange({ sheet, range, data, scopes: scopes.rw });
 }
 
-const locateSheets = once$1(async function locateSheets () {
+const locateSheets = once(async function locateSheets () {
   const m = new Map();
   const files = list({ folder: INVESTMENTS_FOLDER });
   for await (const file of files) {
@@ -808,6 +388,312 @@ function findLastRow (rows) {
   return -1
 }
 
+const debug$2 = Debug('pixprices:import');
+
+const DEFAULT_TICKER_COLUMN = 10; // column K
+const DEFAULT_ACCOUNT_COLUMN = 0; // column A
+const DEFAULT_ACCOUNT_LIST =
+  'AJL,ISA;RSGG,ISA;AJL,Dealing;RSGG,Dealing;AJL,SIPP;RSGG,SIPP;RSGG,SIPP2';
+const DEFAULT_DIV_COLUMN = 26; // column AA
+
+async function importFromPortfolioSheet (portfolio) {
+  const rangeData = await getPortfolioSheet();
+
+  updateStocks(portfolio.stocks, rangeData);
+  updatePositions(portfolio.positions, rangeData);
+}
+
+function updateStocks (stocks, rangeData, options) {
+  const notSeen = new Set(stocks.values());
+  let count = 0;
+  for (const item of getStockData(rangeData, options)) {
+    const stock = stocks.get(item);
+    notSeen.delete(stock);
+    Object.assign(stock, item);
+    count++;
+  }
+  notSeen.forEach(stock => stocks.delete(stock));
+  debug$2(
+    'Updated %d and removed %d stocks from portfolio sheet',
+    count,
+    notSeen.size
+  );
+}
+
+function * getStockData (rangeData, options = {}) {
+  const {
+    tickerColumn = DEFAULT_TICKER_COLUMN,
+    divColumn = DEFAULT_DIV_COLUMN
+  } = options;
+
+  for (const row of rangeData) {
+    const ticker = row[tickerColumn];
+    if (!ticker) continue
+    const div = row[divColumn];
+    const item = { ticker };
+    if (!div || typeof div !== 'number') {
+      item.dividend = undefined;
+    } else {
+      item.dividend = Math.round(div * 1e5) / 1e3;
+    }
+    yield item;
+  }
+}
+
+function updatePositions (positions, rangeData, options) {
+  const notSeen = new Set(positions.values());
+  let count = 0;
+  for (const item of getPositionData(rangeData, options)) {
+    const position = positions.get(item);
+    notSeen.delete(position);
+    Object.assign(position, item);
+    count++;
+  }
+  notSeen.forEach(position => positions.delete(position));
+  debug$2(
+    'Updated %d and removed %d positions from portfolio sheet',
+    count,
+    notSeen.size
+  );
+}
+
+function * getPositionData (rangeData, options = {}) {
+  const {
+    tickerColumn = DEFAULT_TICKER_COLUMN,
+    accountStartColumn = DEFAULT_ACCOUNT_COLUMN,
+    accountList = DEFAULT_ACCOUNT_LIST
+  } = options;
+
+  const accounts = accountList.split(';').map(code => {
+    const [who, account] = code.split(',');
+    return { who, account }
+  });
+
+  for (const row of rangeData) {
+    const ticker = row[tickerColumn];
+    if (!ticker) continue
+
+    const qtys = row.slice(
+      accountStartColumn,
+      accountStartColumn + accounts.length
+    );
+    for (const [i, qty] of qtys.entries()) {
+      if (!qty || typeof qty !== 'number') continue
+
+      yield { ...accounts[i], ticker, qty };
+    }
+  }
+}
+
+const debug$1 = Debug('pixprices:fetch-lse');
+
+const USER_AGENT =
+  'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36';
+
+async function fetchIndex (indexName) {
+  // ftse-all-share
+  // ftse-aim-all-share
+  const url = `https://www.lse.co.uk/share-prices/indices/${indexName}/constituents.html`;
+  return fetchCollection(
+    url,
+    'sp-constituents__table',
+    `lse:index:${indexName}`
+  )
+}
+
+async function fetchSector (sectorName) {
+  // alternative-investment-instruments
+  const url = `https://www.lse.co.uk/share-prices/sectors/${sectorName}/constituents.html`;
+  return fetchCollection(url, 'sp-sectors__table', `lse:sector:${sectorName}`)
+}
+
+async function fetchCollection (url, collClass, source) {
+  await delay(1000);
+
+  const now = new Date();
+  const fetchOpts = {
+    headers: {
+      'User-Agent': USER_AGENT
+    }
+  };
+  const { data: html } = await get(url, fetchOpts);
+  const $ = cheerio.load(html);
+  const items = [];
+  $(`table.${collClass} tr`)
+    .has('td')
+    .each((i, tr) => {
+      const values = [];
+      $('td', tr).each((j, td) => {
+        values.push($(td).text());
+      });
+
+      const { name, ticker } = extractNameAndTicker(values[0]);
+      const price = extractNumber(values[1]);
+      items.push({
+        ticker,
+        name,
+        price,
+        priceUpdated: now,
+        priceSource: source
+      });
+    });
+  debug$1('Read %d items from %s', items.length, source);
+  return items
+}
+
+async function fetchPrice (ticker) {
+  await delay(1000);
+  ticker = ticker.padEnd(3, '.');
+
+  const url = `https://www.lse.co.uk/SharePrice.asp?shareprice=${ticker}`;
+  const now = new Date();
+  const fetchOpts = {
+    headers: {
+      'User-Agent': USER_AGENT
+    }
+  };
+  const { data: html } = await get(url, fetchOpts);
+  const $ = cheerio.load(html);
+
+  const item = {
+    ticker,
+    name: $('h1.title__title')
+      .text()
+      .replace(/ Share Price.*/, ''),
+    price: extractNumber(
+      $('span[data-field="BID"]')
+        .first()
+        .text()
+    ),
+    priceUpdated: now,
+    priceSource: 'lse:share'
+  };
+
+  debug$1('fetched %s from lse:share', ticker);
+
+  return item
+}
+
+function extractNameAndTicker (text) {
+  const re = /(.*)\s+\(([A-Z0-9.]{2,4})\)$/;
+  const m = re.exec(text);
+  if (!m) return {}
+  const [, name, ticker] = m;
+  return { name, ticker: ticker.replace(/\.+$/, '') }
+}
+
+function extractNumber (text) {
+  return parseFloat(text.replace(/,/g, ''))
+}
+
+const debug = Debug('pixprices:fetch');
+
+// first try to load prices via collections - indices and sectors
+const attempts = [
+  ['ftse-all-share', fetchIndex],
+  ['ftse-aim-all-share', fetchIndex],
+  ['alternative-investment-instruments', fetchSector]
+];
+
+async function fetchPrices (stocks) {
+  const neededTickers = new Set([...stocks.values()].map(s => s.ticker));
+
+  for (const [name, fetchFunc] of attempts) {
+    const items = await fetchFunc(name);
+    let count = 0;
+    for (const { ticker, ...data } of items) {
+      if (!neededTickers.has(ticker)) continue
+      const stock = stocks.get({ ticker });
+      neededTickers.delete(ticker);
+      count++;
+      Object.assign(stock, data);
+    }
+    debug('%d prices from %s', count, name);
+    if (!neededTickers.size) break
+  }
+
+  // now pick up the remaining ones
+  for (const ticker of neededTickers) {
+    const item = await fetchPrice(ticker);
+    const stock = stocks.get({ ticker });
+    Object.assign(stock, item);
+  }
+
+  if (neededTickers) {
+    debug(
+      '%d prices individually: %s',
+      neededTickers.size,
+      [...neededTickers].join(', ')
+    );
+  }
+}
+
+async function exportPositions (portfolio) {
+  return updatePositionsSheet(getPositionsSheet(portfolio))
+}
+
+function getPositionsSheet (portfolio) {
+  const rows = [];
+
+  for (const { stock, position } of getPositions(portfolio)) {
+    rows.push(makePositionRow({ stock, position }));
+  }
+
+  rows.sort((x, y) => {
+    if (x.ticker < y.ticker) return -1
+    if (x.ticker > y.ticker) return 1
+    if (x.who < y.who) return -1
+    if (x.who > y.who) return 1
+    if (x.account < y.account) return -1
+    if (x.account > y.account) return 1
+    return 0
+  });
+
+  return rows
+}
+
+function * getPositions ({ positions, stocks }) {
+  for (const position of positions.values()) {
+    if (!position.qty) continue
+    const stock = stocks.get({ ticker: position.ticker });
+    yield { stock, position };
+  }
+}
+
+function makePositionRow ({ position, stock }) {
+  const { who, account, ticker, qty } = position;
+  const { dividend, price } = stock;
+  return [
+    ticker,
+    who,
+    account,
+    qty,
+    price,
+    dividend,
+    Math.round(qty * price) / 100,
+    dividend ? Math.round(qty * dividend) / 100 : undefined
+  ]
+}
+
+async function update (options) {
+  const portfolio = new Portfolio();
+  await portfolio.load();
+
+  if (options['get-portfolio']) {
+    await importFromPortfolioSheet(portfolio);
+  }
+
+  if (options['fetch-prices']) {
+    await fetchPrices(portfolio.stocks);
+  }
+
+  await portfolio.save();
+
+  if (options['update-positions']) {
+    await exportPositions(portfolio);
+  }
+}
+
 const version = '1.1.0';
 
 const prog = sade('pixprices');
@@ -819,26 +705,16 @@ prog
   .option('--get-portfolio', 'update from portfolio sheet')
   .option('--fetch-prices', 'fetch prices from LSE')
   .option('--update-positions', 'update positions sheet')
-  .action(wrap(update));
+  .action(update);
 
-prog.parse(process.argv);
+const parsed = prog.parse(process.argv, {
+  lazy: true
+});
 
-async function update (options) {
-  const portfolio = await Portfolio.deserialize();
-
-  if (options['get-portfolio']) {
-    const sheet = await getPortfolioSheet();
-    portfolio.loadStocksFromSheet(sheet);
-    portfolio.loadPositionsFromSheet(sheet);
-  }
-
-  if (options['fetch-prices']) {
-    await portfolio.fetchPrices();
-  }
-
-  await portfolio.serialize();
-
-  if (options['update-positions']) {
-    await updatePositionsSheet(portfolio.getPositionsSheet());
-  }
+if (parsed) {
+  const { handler, args } = parsed;
+  handler(...args).catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
 }

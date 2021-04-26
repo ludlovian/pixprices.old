@@ -54,8 +54,8 @@ async function fetchCollection (url, collClass, source) {
         ticker,
         name,
         price,
-        time: now,
-        source
+        priceUpdated: now,
+        priceSource: source
       })
     })
   debug('Read %d items from %s', items.length, source)
@@ -64,6 +64,7 @@ async function fetchCollection (url, collClass, source) {
 
 export async function fetchPrice (ticker) {
   await delay(1000)
+  ticker = ticker.padEnd(3, '.')
 
   const url = `https://www.lse.co.uk/SharePrice.asp?shareprice=${ticker}`
   const now = new Date()
@@ -77,18 +78,17 @@ export async function fetchPrice (ticker) {
 
   const item = {
     ticker,
-    time: now,
-    source: 'lse:share'
-  }
-
-  item.name = $('h1.title__title')
-    .text()
-    .replace(/ Share Price.*/, '')
-  item.price = extractNumber(
-    $('span[data-field="BID"]')
-      .first()
+    name: $('h1.title__title')
       .text()
-  )
+      .replace(/ Share Price.*/, ''),
+    price: extractNumber(
+      $('span[data-field="BID"]')
+        .first()
+        .text()
+    ),
+    priceUpdated: now,
+    priceSource: 'lse:share'
+  }
 
   debug('fetched %s from lse:share', ticker)
 
@@ -100,7 +100,7 @@ function extractNameAndTicker (text) {
   const m = re.exec(text)
   if (!m) return {}
   const [, name, ticker] = m
-  return { name, ticker }
+  return { name, ticker: ticker.replace(/\.+$/, '') }
 }
 
 function extractNumber (text) {

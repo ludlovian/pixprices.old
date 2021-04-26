@@ -1,42 +1,23 @@
-'use strict'
-
-import sade from 'sade'
-
 import Portfolio from './portfolio.mjs'
-import { getPortfolioSheet, updatePositionsSheet } from './sheets.mjs'
-import { wrap } from './util.mjs'
+import { importFromPortfolioSheet } from './import.mjs'
+import { fetchPrices } from './fetch.mjs'
+import { exportPositions } from './export.mjs'
 
-const version = '__VERSION__'
-
-const prog = sade('pixprices')
-
-prog.version(version)
-
-prog
-  .command('update', 'update data')
-  .option('--get-portfolio', 'update from portfolio sheet')
-  .option('--fetch-prices', 'fetch prices from LSE')
-  .option('--update-positions', 'update positions sheet')
-  .action(wrap(update))
-
-prog.parse(process.argv)
-
-async function update (options) {
-  const portfolio = await Portfolio.deserialize()
+export async function update (options) {
+  const portfolio = new Portfolio()
+  await portfolio.load()
 
   if (options['get-portfolio']) {
-    const sheet = await getPortfolioSheet()
-    portfolio.loadStocksFromSheet(sheet)
-    portfolio.loadPositionsFromSheet(sheet)
+    await importFromPortfolioSheet(portfolio)
   }
 
   if (options['fetch-prices']) {
-    await portfolio.fetchPrices()
+    await fetchPrices(portfolio.stocks)
   }
 
-  await portfolio.serialize()
+  await portfolio.save()
 
   if (options['update-positions']) {
-    await updatePositionsSheet(portfolio.getPositionsSheet())
+    await exportPositions(portfolio)
   }
 }
