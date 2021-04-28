@@ -1,12 +1,13 @@
-'use strict'
-
 import cheerio from 'cheerio'
 import { get } from 'httpie'
-import Debug from 'debug'
+import log from 'logjs'
 
 import { delay } from './util.mjs'
 
-const debug = Debug('pixprices:fetch-lse')
+const debug = log
+  .prefix('lse:')
+  .colour()
+  .level(3)
 
 const USER_AGENT =
   'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36'

@@ -1,8 +1,11 @@
-import Debug from 'debug'
+import log from 'logjs'
 
 import { getPortfolioSheet } from './sheets.mjs'
 
-const debug = Debug('pixprices:import')
+const debug = log
+  .prefix('import:')
+  .colour()
+  .level(2)
 
 const DEFAULT_TICKER_COLUMN = 10 // column K
 const DEFAULT_ACCOUNT_COLUMN = 0 // column A

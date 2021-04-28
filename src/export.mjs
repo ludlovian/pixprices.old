@@ -1,7 +1,15 @@
+import log from 'logjs'
+
 import { updatePositionsSheet } from './sheets.mjs'
 
+const debug = log
+  .prefix('export:')
+  .colour()
+  .level(2)
+
 export async function exportPositions (portfolio) {
-  return updatePositionsSheet(getPositionsSheet(portfolio))
+  updatePositionsSheet(getPositionsSheet(portfolio))
+  debug('position sheet updated')
 }
 
 function getPositionsSheet (portfolio) {

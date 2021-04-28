@@ -1,13 +1,14 @@
-'use strict'
-
-import Debug from 'debug'
+import log from 'logjs'
 
 import * as sheets from 'googlejs/sheets'
 import * as drive from 'googlejs/drive'
 
 import { once } from './util.mjs'
 
-const debug = Debug('pixprices:sheets')
+const debug = log
+  .prefix('sheets:')
+  .colour()
+  .level(3)
 
 const INVESTMENTS_FOLDER = '0B_zDokw1k2L7VjBGcExJeUxLSlE'
 

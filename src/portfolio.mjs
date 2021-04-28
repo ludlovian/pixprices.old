@@ -1,7 +1,10 @@
-import Debug from 'debug'
-import { Table as DatastoreTable, getEntityKey } from 'googlejs/datastore'
+import log from 'logjs'
+import { Table as DatastoreTable } from 'googlejs/datastore'
 
-const debug = Debug('pixprices:portfolio')
+const debug = log
+  .prefix('portfolio:')
+  .colour()
+  .level(2)
 
 export default class Portfolio {
   constructor () {
@@ -26,37 +29,35 @@ class Table {
   }
 
   async load () {
-    const entities = await this._table.fetchAll()
-    debug('loaded %d entities from %s', entities.length, this.name)
-    this._map = new Map(entities.map(entity => [this.getKey(entity), entity]))
-    this._prevEntities = new Map(
-      entities.map(entity => [getEntityKey(entity), entity])
-    )
+    const rows = await this._table.select()
+    debug('loaded %d rows from %s', rows.length, this.name)
+    this._map = new Map(rows.map(row => [this.getKey(row), row]))
+    this._prevRows = new Set(rows)
   }
 
   async save () {
     if (this._map.size) {
       await this._table.upsert(Array.from(this._map.values()))
-      debug('upserted %d values in %s', this._map.size, this.name)
+      debug('upserted %d rows in %s', this._map.size, this.name)
     }
 
     // build a list of old entities to delete
-    this._map.forEach(entity => this._prevEntities.delete(getEntityKey(entity)))
-    if (this._prevEntities.size) {
-      await this._table.delete(Array.from(this._prevEntities.values()))
-      debug('deleted %d values in %s', this._prevEntities.size, this.name)
-      this._prevEntities.clear()
+    this._map.forEach(row => this._prevRows.delete(row))
+    if (this._prevRows.size) {
+      await this._table.delete([...this._prevRows])
+      debug('deleted %d rows in %s', this._prevRows.size, this.name)
+      this._prevRows.clear()
     }
   }
 
-  get (keyData, Factory) {
-    // returns an exsiting entity, or creates a new one
+  get (keyData) {
+    // returns an exsiting item, or creates a new one
     const key = this.getKey(keyData)
-    let entity = this._map.get(key)
-    if (entity) return entity
-    entity = Object.assign(Factory ? new Factory() : {}, keyData)
-    this._map.set(key, entity)
-    return entity
+    let item = this._map.get(key)
+    if (item) return item
+    item = { ...keyData }
+    this._map.set(key, item)
+    return item
   }
 
   delete (keyData) {
@@ -77,13 +78,7 @@ class Stocks extends Table {
   getKey ({ ticker }) {
     return ticker
   }
-
-  get (keyData) {
-    return super.get(keyData, Stock)
-  }
 }
-
-class Stock {}
 
 class Positions extends Table {
   constructor () {
@@ -93,10 +88,4 @@ class Positions extends Table {
   getKey ({ who, account, ticker }) {
     return `${who}_${account}_${ticker}`
   }
-
-  get (keyData) {
-    return super.get(keyData, Position)
-  }
 }
-
-class Position {}

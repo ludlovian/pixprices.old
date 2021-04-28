@@ -1,8 +1,11 @@
-import Debug from 'debug'
+import log from 'logjs'
 
 import { fetchIndex, fetchSector, fetchPrice } from './fetch-lse.mjs'
 
-const debug = Debug('pixprices:fetch')
+const debug = log
+  .prefix('fetch:')
+  .colour()
+  .level(2)
 
 // first try to load prices via collections - indices and sectors
 const attempts = [
