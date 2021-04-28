@@ -1,8 +1,113 @@
 #!/usr/bin/env node
 import sade from 'sade';
-import Debug from 'debug';
+import { format } from 'util';
 import cheerio from 'cheerio';
 import { get } from 'httpie';
+
+let FORCE_COLOR, NODE_DISABLE_COLORS, NO_COLOR, TERM, isTTY=true;
+if (typeof process !== 'undefined') {
+	({ FORCE_COLOR, NODE_DISABLE_COLORS, NO_COLOR, TERM } = process.env);
+	isTTY = process.stdout && process.stdout.isTTY;
+}
+
+const $ = {
+	enabled: !NODE_DISABLE_COLORS && NO_COLOR == null && TERM !== 'dumb' && (
+		FORCE_COLOR != null && FORCE_COLOR !== '0' || isTTY
+	)
+};
+
+function init(x, y) {
+	let rgx = new RegExp(`\\x1b\\[${y}m`, 'g');
+	let open = `\x1b[${x}m`, close = `\x1b[${y}m`;
+
+	return function (txt) {
+		if (!$.enabled || txt == null) return txt;
+		return open + (!!~(''+txt).indexOf(close) ? txt.replace(rgx, close + open) : txt) + close;
+	};
+}
+const red = init(31, 39);
+const green = init(32, 39);
+const yellow = init(33, 39);
+const blue = init(34, 39);
+const magenta = init(35, 39);
+const cyan = init(36, 39);
+const grey = init(90, 39);
+
+const colourFuncs = { red, green, yellow, blue, magenta, cyan, grey };
+const colours = Object.keys(colourFuncs);
+const CLEAR_LINE = '\r\x1b[0K';
+const RE_DECOLOR = /(^|[^\x1b]*)((?:\x1b\[\d*m)|$)/g; // eslint-disable-line no-control-regex
+
+const state = {
+  dirty: false,
+  width: process.stdout && process.stdout.columns,
+  level: process.env.LOGLEVEL,
+  write: process.stdout.write.bind(process.stdout)
+};
+
+process.stdout &&
+  process.stdout.on('resize', () => (state.width = process.stdout.columns));
+
+function _log (
+  args,
+  { newline = true, limitWidth, prefix = '', level, colour }
+) {
+  if (level && (!state.level || state.level < level)) return
+  const msg = format(...args);
+  let string = prefix + msg;
+  if (colour && colour in colourFuncs) string = colourFuncs[colour](string);
+  if (limitWidth) string = truncate(string, state.width);
+  if (newline) string = string + '\n';
+  if (state.dirty) string = CLEAR_LINE + string;
+  state.dirty = !newline && !!msg;
+  state.write(string);
+}
+
+function truncate (string, max) {
+  max -= 2; // leave two chars at end
+  if (string.length <= max) return string
+  const parts = [];
+  let w = 0
+  ;[...string.matchAll(RE_DECOLOR)].forEach(([, txt, clr]) => {
+    parts.push(txt.slice(0, max - w), clr);
+    w = Math.min(w + txt.length, max);
+  });
+  return parts.join('')
+}
+
+function merge (old, new_) {
+  const prefix = (old.prefix || '') + (new_.prefix || '');
+  return { ...old, ...new_, prefix }
+}
+
+function logger (options) {
+  return Object.defineProperties((...args) => _log(args, options), {
+    _preset: { value: options, configurable: true },
+    _state: { value: state, configurable: true },
+    name: { value: 'log', configurable: true }
+  })
+}
+
+function nextColour () {
+  const clr = colours.shift();
+  colours.push(clr);
+  return clr
+}
+
+function fixup (log) {
+  const p = log._preset;
+  Object.assign(log, {
+    status: logger(merge(p, { newline: false, limitWidth: true })),
+    level: level => fixup(logger(merge(p, { level }))),
+    colour: colour =>
+      fixup(logger(merge(p, { colour: colour || nextColour() }))),
+    prefix: prefix => fixup(logger(merge(p, { prefix }))),
+    ...colourFuncs
+  });
+  return log
+}
+
+const log = fixup(logger({}));
 
 function once$1 (fn) {
   function f (...args) {
@@ -19,6 +124,10 @@ function once$1 (fn) {
   return f
 }
 
+function arrify (arr) {
+  return Array.isArray(arr) ? arr : [arr]
+}
+
 function jsDateToSerialDate (dt) {
   const ms = dt.getTime();
   const localMs = ms - dt.getTimezoneOffset() * 60 * 1000;
@@ -27,22 +136,32 @@ function jsDateToSerialDate (dt) {
   return epochStart + localDays
 }
 
-let KEY;
-
 class Table$1 {
   constructor (kind) {
     this.kind = kind;
   }
 
-  async * fetch () {
-    const datastore = await getDatastoreAPI();
-    const query = datastore.createQuery(this.kind);
+  async * fetch ({ where, order, factory, ...rest } = {}) {
+    const datastore = await getDatastoreAPI(rest);
+    let query = datastore.createQuery(this.kind);
+    if (where && typeof where === 'object') {
+      if (!Array.isArray(where)) where = Object.entries(where);
+      for (const args of where) {
+        query = query.filter(...args);
+      }
+    }
+    if (Array.isArray(order)) {
+      for (const args of order) {
+        query = query.order(...arrify(args));
+      }
+    }
+    const Factory = factory || Row;
     for await (const entity of query.runStream()) {
-      yield entity;
+      yield new Factory(entity, datastore);
     }
   }
 
-  async fetchAll (options) {
+  async select (options) {
     const entities = [];
     for await (const entity of this.fetch(options)) {
       entities.push(entity);
@@ -50,27 +169,45 @@ class Table$1 {
     return entities
   }
 
-  async insert (entities) {
+  async insert (rows) {
     const datastore = await getDatastoreAPI();
-    entities = verifyEntities(entities, { kind: this.kind, datastore });
+    const entities = makeEntities(rows, { kind: this.kind, datastore });
     await datastore.insert(entities);
   }
 
-  async upsert (entities) {
+  async update (rows) {
     const datastore = await getDatastoreAPI();
-    entities = verifyEntities(entities, { kind: this.kind, datastore });
+    const entities = makeEntities(rows, { kind: this.kind, datastore });
+    await datastore.update(entities);
+  }
+
+  async upsert (rows) {
+    const datastore = await getDatastoreAPI();
+    const entities = makeEntities(rows, { kind: this.kind, datastore });
     await datastore.upsert(entities);
   }
 
-  async delete (entities) {
+  async delete (rows) {
     const datastore = await getDatastoreAPI();
-    entities = verifyEntities(entities, { kind: this.kind, datastore });
-    await datastore.delete(entities.map(e => e[datastore.KEY]));
+    const keys = extractKeys(rows);
+    await datastore.delete(keys);
   }
 }
 
-function getEntityKey (entity) {
-  return entity[KEY]
+const KEY = Symbol('rowKey');
+
+class Row {
+  constructor (entity, datastore) {
+    const _key = entity[datastore.KEY];
+    for (const k of Object.keys(entity).sort()) {
+      this[k] = entity[k];
+    }
+    Object.defineProperty(this, KEY, { value: _key, configurable: true });
+  }
+
+  get _key () {
+    return this[KEY]
+  }
 }
 
 const getDatastoreAPI = once$1(async function getDatastoreAPI ({
@@ -82,26 +219,29 @@ const getDatastoreAPI = once$1(async function getDatastoreAPI ({
   }
 
   const datastore = new Datastore();
-  KEY = datastore.KEY;
   return datastore
 });
 
-function verifyEntities (arr, { kind, datastore }) {
-  if (!Array.isArray(arr)) arr = [arr];
-  for (const entity of arr) {
-    if (!(datastore.KEY in entity)) {
-      if ('id' in entity) {
-        entity[datastore.KEY] = datastore.key([kind, entity.id]);
-        delete entity.id;
-      } else {
-        entity[datastore.KEY] = datastore.key([kind]);
-      }
+function makeEntities (arr, { kind, datastore }) {
+  return arrify(arr).map(row => {
+    if (row instanceof Row) return { key: row._key, data: { ...row } }
+    return {
+      key: row._id ? datastore.key([kind, row._id]) : datastore.key([kind]),
+      data: { ...row }
     }
-  }
-  return arr
+  })
 }
 
-const debug$4 = Debug('pixprices:portfolio');
+function extractKeys (arr) {
+  return arrify(arr)
+    .filter(row => row instanceof Row)
+    .map(row => row._key)
+}
+
+const debug$5 = log
+  .prefix('portfolio:')
+  .colour()
+  .level(2);
 
 class Portfolio {
   constructor () {
@@ -126,37 +266,35 @@ class Table {
   }
 
   async load () {
-    const entities = await this._table.fetchAll();
-    debug$4('loaded %d entities from %s', entities.length, this.name);
-    this._map = new Map(entities.map(entity => [this.getKey(entity), entity]));
-    this._prevEntities = new Map(
-      entities.map(entity => [getEntityKey(entity), entity])
-    );
+    const rows = await this._table.select();
+    debug$5('loaded %d rows from %s', rows.length, this.name);
+    this._map = new Map(rows.map(row => [this.getKey(row), row]));
+    this._prevRows = new Set(rows);
   }
 
   async save () {
     if (this._map.size) {
       await this._table.upsert(Array.from(this._map.values()));
-      debug$4('upserted %d values in %s', this._map.size, this.name);
+      debug$5('upserted %d rows in %s', this._map.size, this.name);
     }
 
     // build a list of old entities to delete
-    this._map.forEach(entity => this._prevEntities.delete(getEntityKey(entity)));
-    if (this._prevEntities.size) {
-      await this._table.delete(Array.from(this._prevEntities.values()));
-      debug$4('deleted %d values in %s', this._prevEntities.size, this.name);
-      this._prevEntities.clear();
+    this._map.forEach(row => this._prevRows.delete(row));
+    if (this._prevRows.size) {
+      await this._table.delete([...this._prevRows]);
+      debug$5('deleted %d rows in %s', this._prevRows.size, this.name);
+      this._prevRows.clear();
     }
   }
 
-  get (keyData, Factory) {
-    // returns an exsiting entity, or creates a new one
+  get (keyData) {
+    // returns an exsiting item, or creates a new one
     const key = this.getKey(keyData);
-    let entity = this._map.get(key);
-    if (entity) return entity
-    entity = Object.assign(Factory ? new Factory() : {}, keyData);
-    this._map.set(key, entity);
-    return entity
+    let item = this._map.get(key);
+    if (item) return item
+    item = { ...keyData };
+    this._map.set(key, item);
+    return item
   }
 
   delete (keyData) {
@@ -177,13 +315,7 @@ class Stocks extends Table {
   getKey ({ ticker }) {
     return ticker
   }
-
-  get (keyData) {
-    return super.get(keyData, Stock)
-  }
 }
-
-class Stock {}
 
 class Positions extends Table {
   constructor () {
@@ -193,13 +325,7 @@ class Positions extends Table {
   getKey ({ who, account, ticker }) {
     return `${who}_${account}_${ticker}`
   }
-
-  get (keyData) {
-    return super.get(keyData, Position)
-  }
 }
-
-class Position {}
 
 const SCOPES$1 = {
   rw: ['https://www.googleapis.com/auth/spreadsheets'],
@@ -332,13 +458,16 @@ function once (fn) {
   return f
 }
 
-const debug$3 = Debug('pixprices:sheets');
+const debug$4 = log
+  .prefix('sheets:')
+  .colour()
+  .level(3);
 
 const INVESTMENTS_FOLDER = '0B_zDokw1k2L7VjBGcExJeUxLSlE';
 
 async function getPortfolioSheet () {
   const data = await getSheetData('Portfolio', 'Investments!A:AM');
-  debug$3('Portfolio data retrieved');
+  debug$4('Portfolio data retrieved');
   return data
 }
 
@@ -353,7 +482,7 @@ async function updatePositionsSheet (data) {
   const range = `Positions!A2:I${data.length + 1}`;
   await putSheetData('Positions', range, data);
   await putSheetData('Positions', 'Positions!K1', [[new Date()]]);
-  debug$3('Positions data updated');
+  debug$4('Positions data updated');
 }
 
 async function getSheetData (sheetName, range) {
@@ -388,7 +517,10 @@ function findLastRow (rows) {
   return -1
 }
 
-const debug$2 = Debug('pixprices:import');
+const debug$3 = log
+  .prefix('import:')
+  .colour()
+  .level(2);
 
 const DEFAULT_TICKER_COLUMN = 10; // column K
 const DEFAULT_ACCOUNT_COLUMN = 0; // column A
@@ -413,7 +545,7 @@ function updateStocks (stocks, rangeData, options) {
     count++;
   }
   notSeen.forEach(stock => stocks.delete(stock));
-  debug$2(
+  debug$3(
     'Updated %d and removed %d stocks from portfolio sheet',
     count,
     notSeen.size
@@ -450,7 +582,7 @@ function updatePositions (positions, rangeData, options) {
     count++;
   }
   notSeen.forEach(position => positions.delete(position));
-  debug$2(
+  debug$3(
     'Updated %d and removed %d positions from portfolio sheet',
     count,
     notSeen.size
@@ -485,7 +617,10 @@ function * getPositionData (rangeData, options = {}) {
   }
 }
 
-const debug$1 = Debug('pixprices:fetch-lse');
+const debug$2 = log
+  .prefix('lse:')
+  .colour()
+  .level(3);
 
 const USER_AGENT =
   'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36';
@@ -537,7 +672,7 @@ async function fetchCollection (url, collClass, source) {
         priceSource: source
       });
     });
-  debug$1('Read %d items from %s', items.length, source);
+  debug$2('Read %d items from %s', items.length, source);
   return items
 }
 
@@ -569,7 +704,7 @@ async function fetchPrice (ticker) {
     priceSource: 'lse:share'
   };
 
-  debug$1('fetched %s from lse:share', ticker);
+  debug$2('fetched %s from lse:share', ticker);
 
   return item
 }
@@ -586,7 +721,10 @@ function extractNumber (text) {
   return parseFloat(text.replace(/,/g, ''))
 }
 
-const debug = Debug('pixprices:fetch');
+const debug$1 = log
+  .prefix('fetch:')
+  .colour()
+  .level(2);
 
 // first try to load prices via collections - indices and sectors
 const attempts = [
@@ -608,7 +746,7 @@ async function fetchPrices (stocks) {
       count++;
       Object.assign(stock, data);
     }
-    debug('%d prices from %s', count, name);
+    debug$1('%d prices from %s', count, name);
     if (!neededTickers.size) break
   }
 
@@ -620,7 +758,7 @@ async function fetchPrices (stocks) {
   }
 
   if (neededTickers) {
-    debug(
+    debug$1(
       '%d prices individually: %s',
       neededTickers.size,
       [...neededTickers].join(', ')
@@ -628,8 +766,14 @@ async function fetchPrices (stocks) {
   }
 }
 
+const debug = log
+  .prefix('export:')
+  .colour()
+  .level(2);
+
 async function exportPositions (portfolio) {
-  return updatePositionsSheet(getPositionsSheet(portfolio))
+  updatePositionsSheet(getPositionsSheet(portfolio));
+  debug('position sheet updated');
 }
 
 function getPositionsSheet (portfolio) {
@@ -695,7 +839,7 @@ async function update (options) {
   }
 }
 
-const version = '1.2.0';
+const version = '1.2.1';
 
 const prog = sade('pixprices');
 
