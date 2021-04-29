@@ -114,6 +114,9 @@ class Table$1 {
   }
 
   async * fetch ({ where, order, factory, ...rest } = {}) {
+    if (factory && !(factory.prototype instanceof Row)) {
+      throw new Error('Factory for new rows must subclass Row')
+    }
     const datastore = await getDatastoreAPI(rest);
     let query = datastore.createQuery(this.kind);
     if (where && typeof where === 'object') {
@@ -238,7 +241,7 @@ class Table {
   }
 
   async load () {
-    const rows = await this._table.select();
+    const rows = await this._table.select({ factory: this.factory });
     debug$5('loaded %d rows from %s', rows.length, this.name);
     this._map = new Map(rows.map(row => [this.getKey(row), row]));
     this._prevRows = new Set(rows);
@@ -282,6 +285,7 @@ class Table {
 class Stocks extends Table {
   constructor () {
     super('Stock');
+    this.factory = Stock;
   }
 
   getKey ({ ticker }) {
@@ -289,15 +293,20 @@ class Stocks extends Table {
   }
 }
 
+class Stock extends Row {}
+
 class Positions extends Table {
   constructor () {
     super('Position');
+    this.factory = Position;
   }
 
   getKey ({ who, account, ticker }) {
     return `${who}_${account}_${ticker}`
   }
 }
+
+class Position extends Row {}
 
 const SCOPES$1 = {
   rw: ['https://www.googleapis.com/auth/spreadsheets'],
