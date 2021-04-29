@@ -820,7 +820,7 @@ async function update (options) {
   }
 }
 
-const version = '1.2.2';
+const version = '1.2.3';
 
 const prog = sade('pixprices');
 
