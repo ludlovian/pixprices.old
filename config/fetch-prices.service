@@ -6,5 +6,5 @@ After=network.target
 User=alan
 WorkingDirectory=/home/alan/dev/pixprices
 Environment=NODE_ENV=production
-Environment="DEBUG=pixprices:*" DEBUG_HIDE_DATE=true DEBUG_COLORS=false
+Environment=LOGLEVEL=5
 ExecStart=/bin/bash run/go.sh

@@ -1,37 +1,9 @@
 #!/usr/bin/env node
 import sade from 'sade';
 import { format } from 'util';
+import { red, green, yellow, blue, magenta, cyan, grey } from 'kleur/colors';
 import cheerio from 'cheerio';
 import { get } from 'httpie';
-
-let FORCE_COLOR, NODE_DISABLE_COLORS, NO_COLOR, TERM, isTTY=true;
-if (typeof process !== 'undefined') {
-	({ FORCE_COLOR, NODE_DISABLE_COLORS, NO_COLOR, TERM } = process.env);
-	isTTY = process.stdout && process.stdout.isTTY;
-}
-
-const $ = {
-	enabled: !NODE_DISABLE_COLORS && NO_COLOR == null && TERM !== 'dumb' && (
-		FORCE_COLOR != null && FORCE_COLOR !== '0' || isTTY
-	)
-};
-
-function init(x, y) {
-	let rgx = new RegExp(`\\x1b\\[${y}m`, 'g');
-	let open = `\x1b[${x}m`, close = `\x1b[${y}m`;
-
-	return function (txt) {
-		if (!$.enabled || txt == null) return txt;
-		return open + (!!~(''+txt).indexOf(close) ? txt.replace(rgx, close + open) : txt) + close;
-	};
-}
-const red = init(31, 39);
-const green = init(32, 39);
-const yellow = init(33, 39);
-const blue = init(34, 39);
-const magenta = init(35, 39);
-const cyan = init(36, 39);
-const grey = init(90, 39);
 
 const colourFuncs = { red, green, yellow, blue, magenta, cyan, grey };
 const colours = Object.keys(colourFuncs);

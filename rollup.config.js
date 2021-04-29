@@ -7,8 +7,7 @@ export default {
     'sade',
     'httpie',
     'cheerio',
-    'debug',
-    'ms',
+    'kleur/colors',
     '@googleapis/sheets',
     '@googleapis/drive',
     '@google-cloud/datastore'
