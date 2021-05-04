@@ -1,8 +1,7 @@
 import cheerio from 'cheerio'
 import { get } from 'httpie'
 import log from 'logjs'
-
-import { delay } from './util.mjs'
+import sleep from 'pixutil/sleep'
 
 const debug = log
   .prefix('lse:')
@@ -30,7 +29,7 @@ export async function fetchSector (sectorName) {
 }
 
 async function fetchCollection (url, collClass, source) {
-  await delay(1000)
+  await sleep(1000)
 
   const now = new Date()
   const fetchOpts = {
@@ -64,7 +63,7 @@ async function fetchCollection (url, collClass, source) {
 }
 
 export async function fetchPrice (ticker) {
-  await delay(1000)
+  await sleep(1000)
   ticker = ticker.padEnd(3, '.')
 
   const url = `https://www.lse.co.uk/SharePrice.asp?shareprice=${ticker}`

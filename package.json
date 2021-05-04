@@ -25,6 +25,7 @@
     "googlejs": "github:ludlovian/googlejs",
     "httpie": "^1.1.2",
     "logjs": "github:ludlovian/logjs",
+    "pixutil": "github:ludlovian/pixutil#semver:^1.1.0",
     "sade": "^1.7.4"
   },
   "devDependencies": {

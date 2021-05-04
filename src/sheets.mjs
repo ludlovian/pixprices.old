@@ -1,9 +1,8 @@
 import log from 'logjs'
+import once from 'pixutil/once'
 
 import * as sheets from 'googlejs/sheets'
 import * as drive from 'googlejs/drive'
-
-import { once } from './util.mjs'
 
 const debug = log
   .prefix('sheets:')

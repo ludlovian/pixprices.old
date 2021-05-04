@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import sade from 'sade';
 import { format } from 'util';
-import { red, green, yellow, blue, magenta, cyan, grey } from 'kleur/colors';
+import { cyan, green, yellow, blue, magenta, red } from 'kleur/colors';
 import cheerio from 'cheerio';
 import { get } from 'httpie';
 
-const colourFuncs = { red, green, yellow, blue, magenta, cyan, grey };
+const colourFuncs = { cyan, green, yellow, blue, magenta, red };
 const colours = Object.keys(colourFuncs);
 const CLEAR_LINE = '\r\x1b[0K';
 const RE_DECOLOR = /(^|[^\x1b]*)((?:\x1b\[\d*m)|$)/g; // eslint-disable-line no-control-regex
@@ -81,7 +81,7 @@ function fixup (log) {
 
 const log = fixup(logger({}));
 
-function once$1 (fn) {
+function once (fn) {
   function f (...args) {
     if (f.called) return f.value
     f.value = fn(...args);
@@ -96,16 +96,8 @@ function once$1 (fn) {
   return f
 }
 
-function arrify (arr) {
-  return Array.isArray(arr) ? arr : [arr]
-}
-
-function jsDateToSerialDate (dt) {
-  const ms = dt.getTime();
-  const localMs = ms - dt.getTimezoneOffset() * 60 * 1000;
-  const localDays = localMs / (1000 * 24 * 60 * 60);
-  const epochStart = 25569;
-  return epochStart + localDays
+function arrify (x) {
+  return Array.isArray(x) ? x : [x]
 }
 
 class Table$1 {
@@ -185,7 +177,7 @@ class Row {
   }
 }
 
-const getDatastoreAPI = once$1(async function getDatastoreAPI ({
+const getDatastoreAPI = once(async function getDatastoreAPI ({
   credentials = 'credentials.json'
 } = {}) {
   const { Datastore } = await import('@google-cloud/datastore');
@@ -308,6 +300,14 @@ class Positions extends Table {
 
 class Position extends Row {}
 
+function jsDateToSerialDate (dt) {
+  const ms = dt.getTime();
+  const localMs = ms - dt.getTimezoneOffset() * 60 * 1000;
+  const localDays = localMs / (1000 * 24 * 60 * 60);
+  const epochStart = 25569;
+  return epochStart + localDays
+}
+
 const SCOPES$1 = {
   rw: ['https://www.googleapis.com/auth/spreadsheets'],
   ro: ['https://www.googleapis.com/auth/spreadsheets.readonly']
@@ -356,7 +356,7 @@ async function updateRange ({ sheet, range, data, ...options }) {
   }
 }
 
-const getSheetAPI = once$1(async function getSheetAPI ({
+const getSheetAPI = once(async function getSheetAPI ({
   credentials = 'credentials.json',
   scopes = SCOPES$1.ro
 } = {}) {
@@ -406,7 +406,7 @@ async function * list ({ folder, ...options }) {
   }
 }
 
-const getDriveAPI = once$1(async function getDriveAPI ({
+const getDriveAPI = once(async function getDriveAPI ({
   credentials = 'credentials.json',
   scopes = SCOPES.ro
 } = {}) {
@@ -419,25 +419,6 @@ const getDriveAPI = once$1(async function getDriveAPI ({
   const authClient = await auth.getClient();
   return driveApi.drive({ version: 'v3', auth: authClient })
 });
-
-function delay (ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function once (fn) {
-  function f (...args) {
-    if (f.called) return f.value
-    f.value = fn(...args);
-    f.called = true;
-    return f.value
-  }
-
-  if (fn.name) {
-    Object.defineProperty(f, 'name', { value: fn.name, configurable: true });
-  }
-
-  return f
-}
 
 const debug$4 = log
   .prefix('sheets:')
@@ -598,6 +579,10 @@ function * getPositionData (rangeData, options = {}) {
   }
 }
 
+function sleep (ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 const debug$2 = log
   .prefix('lse:')
   .colour()
@@ -624,7 +609,7 @@ async function fetchSector (sectorName) {
 }
 
 async function fetchCollection (url, collClass, source) {
-  await delay(1000);
+  await sleep(1000);
 
   const now = new Date();
   const fetchOpts = {
@@ -658,7 +643,7 @@ async function fetchCollection (url, collClass, source) {
 }
 
 async function fetchPrice (ticker) {
-  await delay(1000);
+  await sleep(1000);
   ticker = ticker.padEnd(3, '.');
 
   const url = `https://www.lse.co.uk/SharePrice.asp?shareprice=${ticker}`;
