@@ -1188,7 +1188,7 @@ async function update (options) {
   }
 }
 
-const version = '2.0.0';
+const version = '2.0.1';
 
 const prog = sade('pixprices');
 
