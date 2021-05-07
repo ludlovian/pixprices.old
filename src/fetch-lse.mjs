@@ -64,9 +64,12 @@ async function fetchCollection (url, collClass, source) {
 
 export async function fetchPrice (ticker) {
   await sleep(1000)
-  ticker = ticker.padEnd(3, '.')
 
-  const url = `https://www.lse.co.uk/SharePrice.asp?shareprice=${ticker}`
+  const url = [
+    'https://www.lse.co.uk/SharePrice.asp',
+    `?shareprice=${ticker.padEnd('.', 3)}`
+  ].join('')
+
   const now = new Date()
   const fetchOpts = {
     headers: {

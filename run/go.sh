@@ -1,5 +1,7 @@
 dist/pixprices \
     update \
-    --get-portfolio \
+    --import-portfolio \
+    --import-trades \
     --fetch-prices \
-    --update-positions
+    --export-positions \
+    --export-trades

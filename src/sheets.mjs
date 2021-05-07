@@ -17,21 +17,36 @@ export async function getPortfolioSheet () {
   return data
 }
 
-export async function updatePositionsSheet (data) {
-  const currData = await getSheetData('Positions', 'Positions!A2:I')
-  const lastRow = findLastRow(currData)
-  const firstRow = data[0]
-  while (data.length < lastRow + 1) {
-    data.push(firstRow.map(x => ''))
-  }
+export async function getTradesSheet () {
+  const data = await getSheetData('Trades', 'Trades!A2:F')
+  debug('Trade data retrieved')
+  return data
+}
 
-  const range = `Positions!A2:I${data.length + 1}`
-  await putSheetData('Positions', range, data)
+export async function updatePositionsSheet (data) {
+  await overwriteSheetData('Positions', 'Positions!A2:I', data)
   await putSheetData('Positions', 'Positions!K1', [[new Date()]])
   debug('Positions data updated')
 }
 
-async function getSheetData (sheetName, range) {
+export async function updateTradesSheet (data) {
+  await overwriteSheetData('Positions', 'Trades!A2:G', data)
+  debug('Trades data updated')
+}
+
+async function overwriteSheetData (sheetName, range, data) {
+  const currData = await getSheetData(sheetName, range)
+  const lastRow = findLastRow(currData || [[]])
+  const firstRow = data[0]
+  while (data.length < lastRow + 1) {
+    data.push(firstRow.map(() => ''))
+  }
+
+  const newRange = range.replace(/\d+$/, '') + (data.length + 1)
+  await putSheetData(sheetName, newRange, data)
+}
+
+export async function getSheetData (sheetName, range) {
   const sheetList = await locateSheets()
   const sheet = sheetList.get(sheetName).id
 

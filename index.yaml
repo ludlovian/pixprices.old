@@ -1,0 +1,9 @@
+indexes:
+- kind: Trade
+  properties:
+  - name: who
+  - name: account
+  - name: ticker
+  - name: seq
+  - name: date
+

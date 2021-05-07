@@ -20,12 +20,11 @@ export async function fetchPrices (stocks) {
   for (const [name, fetchFunc] of attempts) {
     const items = await fetchFunc(name)
     let count = 0
-    for (const { ticker, ...data } of items) {
-      if (!neededTickers.has(ticker)) continue
-      const stock = stocks.get({ ticker })
-      neededTickers.delete(ticker)
+    for (const item of items) {
+      if (!neededTickers.has(item.ticker)) continue
+      stocks.set(item)
+      neededTickers.delete(item.ticker)
       count++
-      Object.assign(stock, data)
     }
     debug('%d prices from %s', count, name)
     if (!neededTickers.size) break
@@ -34,8 +33,7 @@ export async function fetchPrices (stocks) {
   // now pick up the remaining ones
   for (const ticker of neededTickers) {
     const item = await fetchPrice(ticker)
-    const stock = stocks.get({ ticker })
-    Object.assign(stock, item)
+    stocks.set(item)
   }
 
   if (neededTickers) {
