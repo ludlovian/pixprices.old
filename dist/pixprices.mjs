@@ -5,6 +5,79 @@ import { cyan, green, yellow, blue, magenta, red } from 'kleur/colors';
 import cheerio from 'cheerio';
 import { get } from 'httpie';
 
+function sortBy (name, desc) {
+  const fn = typeof name === 'function' ? name : x => x[name];
+  const parent = typeof this === 'function' ? this : null;
+  const direction = desc ? -1 : 1;
+  sortFunc.thenBy = sortBy;
+  return sortFunc
+
+  function sortFunc (a, b) {
+    return (parent && parent(a, b)) || direction * compare(a, b, fn)
+  }
+
+  function compare (a, b, fn) {
+    const va = fn(a);
+    const vb = fn(b);
+    return va < vb ? -1 : va > vb ? 1 : 0
+  }
+}
+
+function once (fn) {
+  function f (...args) {
+    if (f.called) return f.value
+    f.value = fn(...args);
+    f.called = true;
+    return f.value
+  }
+
+  if (fn.name) {
+    Object.defineProperty(f, 'name', { value: fn.name, configurable: true });
+  }
+
+  return f
+}
+
+function arrify (x) {
+  return Array.isArray(x) ? x : [x]
+}
+
+function clone (o) {
+  if (!o || typeof o !== 'object') return o
+  if (o instanceof Date) return new Date(o)
+  if (Array.isArray(o)) return o.map(clone)
+  return Object.entries(o).reduce((o, [k, v]) => {
+    o[k] = clone(v);
+    return o
+  }, {})
+}
+
+const has = Object.prototype.hasOwnProperty;
+
+function equal (a, b) {
+  if (
+    !a ||
+    !b ||
+    typeof a !== 'object' ||
+    typeof b !== 'object' ||
+    a.constructor !== b.constructor
+  ) {
+    return a === b
+  }
+  if (a instanceof Date) return +a === +b
+  if (Array.isArray(a)) {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) {
+      if (!equal(a[i], b[i])) return false
+    }
+    return true
+  }
+  for (const k of Object.keys(a)) {
+    if (!has.call(b, k) || !equal(a[k], b[k])) return false
+  }
+  return Object.keys(a).length === Object.keys(b).length
+}
+
 const colourFuncs = { cyan, green, yellow, blue, magenta, red };
 const colours = Object.keys(colourFuncs);
 const CLEAR_LINE = '\r\x1b[0K';
@@ -81,80 +154,34 @@ function fixup (log) {
 
 const log = fixup(logger({}));
 
-function sortBy (name, desc) {
-  const fn = typeof name === 'function' ? name : x => x[name];
-  const parent = typeof this === 'function' ? this : null;
-  const direction = desc ? -1 : 1;
-  sortFunc.thenBy = sortBy;
-  return sortFunc
-
-  function sortFunc (a, b) {
-    return (parent && parent(a, b)) || direction * compare(a, b, fn)
-  }
-
-  function compare (a, b, fn) {
-    const va = fn(a);
-    const vb = fn(b);
-    return va < vb ? -1 : va > vb ? 1 : 0
-  }
+function toSerial (dt) {
+  const ms = dt.getTime();
+  const localMs = ms - dt.getTimezoneOffset() * 60 * 1000;
+  const localDays = localMs / (1000 * 24 * 60 * 60);
+  const epochStart = 25569;
+  return epochStart + localDays
 }
 
-const has = Object.prototype.hasOwnProperty;
-
-function equal (a, b) {
-  if (
-    !a ||
-    !b ||
-    typeof a !== 'object' ||
-    typeof b !== 'object' ||
-    a.constructor !== b.constructor
-  ) {
-    return a === b
-  }
-  if (a instanceof Date) return +a === +b
-  if (Array.isArray(a)) {
-    if (a.length !== b.length) return false
-    for (let i = 0; i < a.length; i++) {
-      if (!equal(a[i], b[i])) return false
-    }
-    return true
-  }
-  for (const k of Object.keys(a)) {
-    if (!has.call(b, k) || !equal(a[k], b[k])) return false
-  }
-  return Object.keys(a).length === Object.keys(b).length
+function toDate (serial) {
+  const epochStart = 25569;
+  const ms = (serial - epochStart) * 24 * 60 * 60 * 1000;
+  const tryDate = new Date(ms);
+  const offset = tryDate.getTimezoneOffset() * 60 * 1000;
+  return new Date(ms + offset)
 }
 
-function once (fn) {
-  function f (...args) {
-    if (f.called) return f.value
-    f.value = fn(...args);
-    f.called = true;
-    return f.value
+function clean (obj) {
+  const ret = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) ret[k] = v;
   }
-
-  if (fn.name) {
-    Object.defineProperty(f, 'name', { value: fn.name, configurable: true });
-  }
-
-  return f
+  return ret
 }
 
-function arrify (x) {
-  return Array.isArray(x) ? x : [x]
-}
-
-function clone (o) {
-  if (!o || typeof o !== 'object') return o
-  if (o instanceof Date) return new Date(o)
-  if (Array.isArray(o)) return o.map(clone)
-  return Object.entries(o).reduce((o, [k, v]) => {
-    o[k] = clone(v);
-    return o
-  }, {})
-}
-
-const debug$8 = log.prefix('googlejs:datastore:').colour().level(5);
+const debug$8 = log
+  .prefix('googlejs:datastore:')
+  .colour()
+  .level(5);
 
 class Table$1 {
   constructor (kind) {
@@ -246,8 +273,8 @@ class Row {
   }
 
   _changed () {
-    // unwrap from class before comparing
-    return !equal({ ...this }, this[PREV])
+    // unwrap from class and clean before comparing
+    return !equal(clean(this), this[PREV])
   }
 }
 
@@ -297,9 +324,120 @@ function * getKeys (arr, { group = 400 } = {}) {
 }
 
 const debug$7 = log
-  .prefix('portfolio:')
+  .prefix('table:')
   .colour()
-  .level(2);
+  .level(3);
+
+class Table {
+  constructor (name) {
+    this.name = name;
+    this._table = new Table$1(name);
+    this.ix = {};
+  }
+
+  async load () {
+    const rows = await this._table.select({ factory: this.factory });
+    if (this.order) rows.sort(this.order);
+    for (const k in this.ix) this.ix[k].rebuild(rows);
+    this._changed = new Set();
+    this._deleted = new Set();
+    debug$7('loaded %d rows from %s', rows.length, this.name);
+  }
+
+  async save () {
+    const changed = [...this._changed];
+    const deleted = [...this._deleted];
+    if (changed.length) {
+      await this._table.upsert(changed);
+      debug$7('upserted %d rows in %s', changed.length, this.name);
+    }
+
+    if (deleted.length) {
+      await this._table.delete(deleted);
+      debug$7('deleted %d rows in %s', deleted.length, this.name);
+    }
+  }
+
+  set (data) {
+    const row = this.ix.main.get(data);
+    if (row) {
+      Object.assign(row, data);
+      this._changed.add(row);
+      return row
+    } else {
+      const row = { ...data };
+      for (const k in this.ix) this.ix[k].add(row);
+      this._changed.add(row);
+      return row
+    }
+  }
+
+  delete (data) {
+    const row = this.ix.main.get(data);
+    if (!row) return
+    for (const k in this.ix) this.ix[k].delete(row);
+    this._deleted.add(row);
+    return row
+  }
+
+  values () {
+    return this.ix.main.map.values()
+  }
+}
+
+class Index {
+  constructor (fn) {
+    this.fn = fn;
+    this.map = new Map();
+  }
+
+  rebuild (rows) {
+    this.map.clear();
+    for (const row of rows) {
+      this.add(row);
+    }
+  }
+
+  add (row) {
+    const key = this.fn(row);
+    const entry = this.map.get(key);
+    if (entry) {
+      entry.add(row);
+    } else {
+      this.map.set(key, new Set([row]));
+    }
+  }
+
+  delete (row) {
+    const key = this.fn(row);
+    const entry = this.map.get(key);
+    if (!entry) return
+    entry.delete(row);
+    if (!entry.size) this.map.delete(key);
+  }
+
+  get (data) {
+    const key = this.fn(data);
+    return this.map.get(key) || []
+  }
+}
+
+class UniqueIndex extends Index {
+  add (row) {
+    const key = this.fn(row);
+    this.map.set(key, row);
+  }
+
+  delete (row) {
+    const key = this.fn(row);
+    this.map.delete(key);
+  }
+
+  get (data) {
+    const key = this.fn(data);
+    return this.map.get(key)
+  }
+}
 
 class Portfolio {
   constructor () {
@@ -325,83 +463,16 @@ class Portfolio {
   }
 }
 
-class Table {
-  constructor (name) {
-    this.name = name;
-    this._table = new Table$1(name);
-  }
-
-  async load () {
-    const rows = await this._table.select({ factory: this.factory });
-    if (this.order) rows.sort(this.order);
-    this._rows = new Set(rows);
-    this._prevRows = new Set(rows);
-    this._changed = new Set();
-    debug$7('loaded %d rows from %s', rows.length, this.name);
-  }
-
-  async save () {
-    const changed = [...this._changed];
-    const deleted = [...this._prevRows].filter(row => !this._rows.has(row));
-    if (changed.length) {
-      await this._table.upsert(changed);
-      debug$7('upserted %d rows in %s', changed.length, this.name);
-    }
-
-    if (deleted.length) {
-      await this._table.delete(deleted);
-      debug$7('deleted %d rows in %s', deleted.length, this.name);
-    }
-  }
-
-  * find (fn) {
-    for (const row of this._rows) {
-      if (fn(row)) yield row;
-    }
-  }
-
-  set (data) {
-    const key = this.key(data);
-    const fn = row => equal(this.key(row), key);
-    const [row] = [...this.find(fn)];
-    if (row) {
-      Object.assign(row, data);
-      this._changed.add(row);
-      return row
-    } else {
-      const row = { ...data };
-      this._rows.add(row);
-      this._changed.add(row);
-      return row
-    }
-  }
-
-  delete (data) {
-    const key = this.key(data);
-    const fn = row => equal(this.key(row), key);
-    const [row] = [...this.find(fn)];
-    if (!row) return
-    this._rows.delete(row);
-    this._changed.delete(row);
-    return row
-  }
-
-  values () {
-    return this._rows.values()
-  }
-}
-
 class Stocks extends Table {
   constructor () {
     super('Stock');
     this.factory = Stock;
     this.order = sortBy('ticker');
-    this.key = ({ ticker }) => ({ ticker });
+    this.ix.main = new UniqueIndex(({ ticker }) => ticker);
   }
 
   get (ticker) {
-    const fn = row => row.ticker === ticker;
-    return this.find(fn).next().value
+    return this.ix.main.get({ ticker })
   }
 }
 
@@ -414,7 +485,9 @@ class Positions extends Table {
     this.order = sortBy('ticker')
       .thenBy('who')
       .thenBy('account');
-    this.key = ({ ticker, who, account }) => ({ ticker, who, account });
+    this.ix.main = new UniqueIndex(
+      ({ ticker, who, account }) => `${ticker}_${who}_${account}`
+    );
   }
 }
 
@@ -428,19 +501,18 @@ class Trades extends Table {
       .thenBy('account')
       .thenBy('ticker')
       .thenBy('seq');
-    this.key = ({ who, account, ticker, seq }) => ({
-      who,
-      account,
-      ticker,
-      seq
-    });
+    this.ix.main = new UniqueIndex(
+      ({ who, account, ticker, seq }) => `${who}_${account}_${ticker}_${seq}`
+    );
+
+    this.ix.position = new Index(
+      ({ who, account, ticker }) => `${who}_${account}_${ticker}`
+    );
   }
 
   setTrades (data) {
-    const getKey = ({ who, account, ticker }) => ({ who, account, ticker });
-    const key = getKey(data[0]);
-    const fn = row => equal(getKey(row), key);
-    const existing = [...this.find(fn)];
+    const existing = [...this.ix.position.get(data[0])];
+    existing.sort(sortBy('seq'));
     let seq = 1;
     for (const row of data) {
       this.set({ ...row, seq });
@@ -453,22 +525,6 @@ class Trades extends Table {
 }
 
 class Trade extends Row {}
-
-function toSerial (dt) {
-  const ms = dt.getTime();
-  const localMs = ms - dt.getTimezoneOffset() * 60 * 1000;
-  const localDays = localMs / (1000 * 24 * 60 * 60);
-  const epochStart = 25569;
-  return epochStart + localDays
-}
-
-function toDate (serial) {
-  const epochStart = 25569;
-  const ms = (serial - epochStart) * 24 * 60 * 60 * 1000;
-  const tryDate = new Date(ms);
-  const offset = tryDate.getTimezoneOffset() * 60 * 1000;
-  return new Date(ms + offset)
-}
 
 const SCOPES$1 = {
   rw: ['https://www.googleapis.com/auth/spreadsheets'],
@@ -854,7 +910,7 @@ function * rawTrades (rows) {
     if (cost && typeof cost !== 'number') continue
     if (!qty && !cost) continue
     const date = toDate(date_);
-    yield clean({
+    yield {
       who,
       ticker,
       account,
@@ -862,16 +918,8 @@ function * rawTrades (rows) {
       qty,
       cost: Math.round(cost * 100),
       notes
-    });
+    };
   }
-}
-
-function clean (obj) {
-  const ret = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v !== undefined) ret[k] = v;
-  }
-  return ret
 }
 
 function sleep (ms) {

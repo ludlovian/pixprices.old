@@ -105,7 +105,7 @@ function * rawTrades (rows) {
     if (cost && typeof cost !== 'number') continue
     if (!qty && !cost) continue
     const date = toDate(date_)
-    yield clean({
+    yield {
       who,
       ticker,
       account,
@@ -113,14 +113,6 @@ function * rawTrades (rows) {
       qty,
       cost: Math.round(cost * 100),
       notes
-    })
+    }
   }
-}
-
-function clean (obj) {
-  const ret = {}
-  for (const [k, v] of Object.entries(obj)) {
-    if (v !== undefined) ret[k] = v
-  }
-  return ret
 }
