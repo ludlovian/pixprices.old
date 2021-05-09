@@ -1,5 +1,6 @@
 import log from 'logjs'
 import sortBy from 'sortby'
+import { pipeline, filter, sort, map } from 'teme'
 
 import { updatePositionsSheet } from './sheets.mjs'
 
@@ -14,35 +15,34 @@ export async function exportPositions (portfolio) {
 }
 
 function getPositionsSheet (portfolio) {
-  const rows = positionRows(getPositions(portfolio))
-  const fn = sortBy(0)
-    .thenBy(1)
-    .thenBy(2)
-  return [...rows].sort(fn)
-}
+  const { stocks, positions } = portfolio
 
-function * getPositions ({ positions, stocks }) {
-  for (const position of positions.values()) {
-    if (!position.qty) continue
-    const stock = stocks.get(position.ticker)
-    yield { stock, position }
-  }
-}
+  const hasQty = pos => !!pos.qty
+  const addStock = position => ({
+    position,
+    stock: stocks.get(position.ticker)
+  })
+  const sortFn = sortBy('ticker')
+    .thenBy('who')
+    .thenBy('account')
+  const makeRow = ({ position: p, stock: s }) => [
+    p.ticker,
+    p.who,
+    p.account,
+    p.qty,
+    s.price || '',
+    s.dividend || '',
+    s.dividend && s.price ? s.dividend / s.price : '',
+    Math.round(p.qty * s.price) / 100 || '',
+    s.dividend ? Math.round(p.qty * s.dividend) / 100 : ''
+  ]
 
-function * positionRows (source) {
-  for (const { position, stock } of source) {
-    const { who, account, ticker, qty } = position
-    const { dividend, price } = stock
-    yield [
-      ticker,
-      who,
-      account,
-      qty,
-      price || '',
-      dividend || '',
-      dividend && price ? dividend / price : '',
-      Math.round(qty * price) / 100 || '',
-      dividend ? Math.round(qty * dividend) / 100 : ''
-    ]
-  }
+  const xform = pipeline(
+    filter(hasQty),
+    sort(sortFn),
+    map(addStock),
+    map(makeRow)
+  )
+
+  return [...xform(positions.values())]
 }

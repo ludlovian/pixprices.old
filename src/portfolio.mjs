@@ -1,7 +1,6 @@
 import sortBy from 'sortby'
 import { Row } from 'googlejs/datastore'
-
-import { Table, Index, UniqueIndex } from './table.mjs'
+import { IndexedTable, Index, UniqueIndex } from 'googlejs/table'
 
 export default class Portfolio {
   constructor () {
@@ -27,7 +26,7 @@ export default class Portfolio {
   }
 }
 
-class Stocks extends Table {
+class Stocks extends IndexedTable {
   constructor () {
     super('Stock')
     this.factory = Stock
@@ -42,7 +41,7 @@ class Stocks extends Table {
 
 class Stock extends Row {}
 
-class Positions extends Table {
+class Positions extends IndexedTable {
   constructor () {
     super('Position')
     this.factory = Position
@@ -57,7 +56,7 @@ class Positions extends Table {
 
 class Position extends Row {}
 
-class Trades extends Table {
+class Trades extends IndexedTable {
   constructor () {
     super('Trade')
     this.factory = Trade

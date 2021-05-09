@@ -52,6 +52,20 @@ function clone (o) {
   }, {})
 }
 
+function batch (size) {
+  return function * (source) {
+    let batch = [];
+    for (const item of source) {
+      batch.push(item);
+      if (batch.length === size) {
+        yield batch;
+        batch = [];
+      }
+    }
+    if (batch.length) yield batch;
+  }
+}
+
 const has = Object.prototype.hasOwnProperty;
 
 function equal (a, b) {
@@ -172,18 +186,19 @@ function toDate (serial) {
 
 function clean (obj) {
   const ret = {};
-  for (const [k, v] of Object.entries(obj)) {
+  for (const k of Object.keys(obj).sort()) {
+    const v = obj[k];
     if (v !== undefined) ret[k] = v;
   }
   return ret
 }
 
-const debug$8 = log
+const debug$7 = log
   .prefix('googlejs:datastore:')
   .colour()
   .level(5);
 
-class Table$1 {
+class Table {
   constructor (kind) {
     this.kind = kind;
   }
@@ -216,7 +231,7 @@ class Table$1 {
     for await (const entity of this.fetch(options)) {
       entities.push(entity);
     }
-    debug$8('%d records loaded from %s', entities.length, this.kind);
+    debug$7('%d records loaded from %s', entities.length, this.kind);
     return entities
   }
 
@@ -225,7 +240,7 @@ class Table$1 {
     const { kind } = this;
     for (const entities of getEntities(rows, { kind, datastore })) {
       await datastore.insert(entities);
-      debug$8('%d records inserted to %s', entities.length, this.kind);
+      debug$7('%d records inserted to %s', entities.length, this.kind);
     }
   }
 
@@ -234,7 +249,7 @@ class Table$1 {
     const { kind } = this;
     for (const entities of getEntities(rows, { kind, datastore })) {
       await datastore.update(entities);
-      debug$8('%d records updated to %s', entities.length, this.kind);
+      debug$7('%d records updated to %s', entities.length, this.kind);
     }
   }
 
@@ -243,7 +258,7 @@ class Table$1 {
     const { kind } = this;
     for (const entities of getEntities(rows, { kind, datastore })) {
       await datastore.upsert(entities);
-      debug$8('%d records upserted to %s', entities.length, this.kind);
+      debug$7('%d records upserted to %s', entities.length, this.kind);
     }
   }
 
@@ -251,7 +266,7 @@ class Table$1 {
     const datastore = await getDatastoreAPI();
     for (const keys of getKeys(rows)) {
       await datastore.delete(keys);
-      debug$8('%d records deleted from %s', keys.length, this.kind);
+      debug$7('%d records deleted from %s', keys.length, this.kind);
     }
   }
 }
@@ -261,7 +276,7 @@ const PREV = Symbol('prev');
 
 class Row {
   constructor (entity, datastore) {
-    Object.assign(this, clone(entity));
+    Object.assign(this, clone(clean(entity)));
     Object.defineProperties(this, {
       [KEY]: { value: entity[datastore.KEY], configurable: true },
       [PREV]: { value: clone(entity), configurable: true }
@@ -291,70 +306,48 @@ const getDatastoreAPI = once(async function getDatastoreAPI ({
 });
 
 function * getEntities (arr, { kind, datastore, group = 400 }) {
-  let batch = [];
-  for (const row of arrify(arr)) {
-    if (row instanceof Row && !row._changed()) continue
-    batch.push({
-      key: row instanceof Row ? row._key : datastore.key([kind]),
+  const entities = arrify(arr)
+    .filter(row => !(row instanceof Row) || row._changed())
+    .map(row => ({
+      key: row._key || datastore.key([kind]),
       data: clone(row)
-    });
-    if (batch.length === group) {
-      yield batch;
-      batch = [];
-    }
-  }
-  if (batch.length) {
-    yield batch;
-  }
+    }));
+
+  yield * batch(group)(entities);
 }
 
 function * getKeys (arr, { group = 400 } = {}) {
-  let batch = [];
-  for (const row of arrify(arr)) {
-    if (!(row instanceof Row)) continue
-    batch.push(row._key);
-    if (batch.length === group) {
-      yield batch;
-      batch = [];
-    }
-  }
-  if (batch.length) {
-    yield batch;
-  }
+  const keys = arrify(arr)
+    .filter(row => row instanceof Row)
+    .map(row => row._key);
+
+  yield * batch(group)(keys);
 }
 
-const debug$7 = log
-  .prefix('table:')
-  .colour()
-  .level(3);
-
-class Table {
+class IndexedTable extends Table {
   constructor (name) {
+    super(name);
     this.name = name;
-    this._table = new Table$1(name);
     this.ix = {};
   }
 
   async load () {
-    const rows = await this._table.select({ factory: this.factory });
+    const rows = await super.select({ factory: this.factory });
     if (this.order) rows.sort(this.order);
     for (const k in this.ix) this.ix[k].rebuild(rows);
     this._changed = new Set();
     this._deleted = new Set();
-    debug$7('loaded %d rows from %s', rows.length, this.name);
   }
 
   async save () {
     const changed = [...this._changed];
     const deleted = [...this._deleted];
     if (changed.length) {
-      await this._table.upsert(changed);
-      debug$7('upserted %d rows in %s', changed.length, this.name);
+      await super.upsert(changed);
     }
 
     if (deleted.length) {
-      await this._table.delete(deleted);
-      debug$7('deleted %d rows in %s', deleted.length, this.name);
+      await super.delete(deleted);
     }
   }
 
@@ -381,7 +374,7 @@ class Table {
   }
 
   values () {
-    return this.ix.main.map.values()
+    return this.ix.main ? this.ix.main.map.values() : []
   }
 }
 
@@ -463,7 +456,7 @@ class Portfolio {
   }
 }
 
-class Stocks extends Table {
+class Stocks extends IndexedTable {
   constructor () {
     super('Stock');
     this.factory = Stock;
@@ -478,7 +471,7 @@ class Stocks extends Table {
 
 class Stock extends Row {}
 
-class Positions extends Table {
+class Positions extends IndexedTable {
   constructor () {
     super('Position');
     this.factory = Position;
@@ -493,7 +486,7 @@ class Positions extends Table {
 
 class Position extends Row {}
 
-class Trades extends Table {
+class Trades extends IndexedTable {
   constructor () {
     super('Trade');
     this.factory = Trade;
@@ -756,12 +749,11 @@ function * getStockData (rangeData, options = {}) {
     const ticker = row[tickerColumn];
     if (!ticker) continue
     const div = row[divColumn];
-    const item = { ticker };
-    if (!div || typeof div !== 'number') {
-      item.dividend = undefined;
-    } else {
-      item.dividend = Math.round(div * 1e5) / 1e3;
-    }
+    const item = {
+      ticker,
+      dividend:
+        div && typeof div === 'number' ? Math.round(div * 1e5) / 1e3 : undefined
+    };
     yield item;
   }
 }
@@ -784,29 +776,70 @@ function updatePositions (positions, rangeData, options) {
 
 function * getPositionData (rangeData, options = {}) {
   const {
-    tickerColumn = DEFAULT_TICKER_COLUMN,
-    accountStartColumn = DEFAULT_ACCOUNT_COLUMN,
-    accountList = DEFAULT_ACCOUNT_LIST
+    tickerCol = DEFAULT_TICKER_COLUMN,
+    accountCol = DEFAULT_ACCOUNT_COLUMN,
+    accounts = DEFAULT_ACCOUNT_LIST
   } = options;
 
-  const accounts = accountList.split(';').map(code => {
-    const [who, account] = code.split(',');
-    return { who, account }
-  });
+  const accts = accounts
+    .split(';')
+    .map(code => code.split(','))
+    .map(([who, account]) => ({ who, account }));
 
   for (const row of rangeData) {
-    const ticker = row[tickerColumn];
+    const ticker = row[tickerCol];
     if (!ticker) continue
 
-    const qtys = row.slice(
-      accountStartColumn,
-      accountStartColumn + accounts.length
-    );
-    for (const [i, qty] of qtys.entries()) {
-      if (!qty || typeof qty !== 'number') continue
+    const positions = row
+      .slice(accountCol, accountCol + accts.length)
+      .map((qty, i) => ({ ...accts[i], ticker, qty }))
+      .filter(({ qty }) => qty && typeof qty === 'number');
 
-      yield { ...accounts[i], ticker, qty };
+    yield * positions;
+  }
+}
+
+function group (fn) {
+  return function * (src) {
+    let prev = Symbol('null');
+    let group = [];
+    for (const item of src) {
+      const curr = fn(item);
+      if (!equal(curr, prev)) {
+        if (group.length) yield [prev, group];
+        group = [];
+        prev = curr;
+      }
+      group.push(item);
     }
+    if (group.length) yield [prev, group];
+  }
+}
+
+function filter (fn) {
+  return function * filter (src) {
+    for (const item of src) {
+      if (fn(item)) yield item;
+    }
+  }
+}
+
+function map (fn) {
+  return function * map (src) {
+    for (const item of src) {
+      yield fn(item);
+    }
+  }
+}
+
+function pipeline (...xforms) {
+  return src => xforms.reduce((s, xform) => xform(s), src)
+}
+
+function sort (fn) {
+  return function * (source) {
+    const data = [...source];
+    yield * data.sort(fn);
   }
 }
 
@@ -821,16 +854,13 @@ async function importFromTradesSheet (portfolio) {
   updateTrades(portfolio.trades, rangeData);
 }
 
-function updateTrades (trades, source) {
-  source = rawTrades(source);
-  source = sortTrades$1(source);
-  source = groupTrades(source);
-  source = addCosts(source);
+function updateTrades (trades, rangeData) {
+  const groups = makeExtractor()(rangeData);
 
   let nGroups = 0;
   let nTrades = 0;
 
-  for (const group of source) {
+  for (const group of groups) {
     if (!group.length) continue
     nGroups++;
     nTrades += group.length;
@@ -840,85 +870,87 @@ function updateTrades (trades, source) {
   debug$4('Updated %d positions with %d trades', nGroups, nTrades);
 }
 
-function * addCosts (source) {
-  for (const trades of source) {
-    const pos = { cost: 0, qty: 0 };
-    for (const trade of trades) {
-      if (trade.qty && trade.cost && trade.qty > 0) {
-        pos.qty += trade.qty;
-        pos.cost += trade.cost;
-      } else if (trade.qty && trade.cost && trade.qty < 0) {
-        const prevPos = { ...pos };
-        pos.qty += trade.qty;
-        pos.cost = prevPos.qty
-          ? Math.round((prevPos.cost * pos.qty) / prevPos.qty)
-          : 0;
-        const proceeds = -trade.cost;
-        trade.cost = pos.cost - prevPos.cost;
-        trade.gain = proceeds + trade.cost;
-      } else if (trade.qty) {
-        pos.qty += trade.qty;
-      } else if (trade.cost) {
-        pos.cost += trade.cost;
-      }
-    }
-    yield trades;
-  }
-}
-
-function * groupTrades (source) {
-  const getKey = ({ who, account, ticker }) => ({ who, account, ticker });
-  let currkey;
-  let trades = [];
-  for (const trade of source) {
-    const key = getKey(trade);
-    if (!equal(key, currkey)) {
-      if (trades.length) yield trades;
-      currkey = key;
-      trades = [];
-    }
-    trades.push(trade);
-  }
-  if (trades.length) yield trades;
-}
-
-function * sortTrades$1 (source) {
-  const trades = [...source];
-  // add sequence to ensure stable sort
-  trades.forEach((trade, seq) => Object.assign(trade, { seq }));
-  const fn = sortBy('who')
+function makeExtractor () {
+  let seq = 0;
+  const addSeq = trade => ({ ...trade, seq: seq++ });
+  const removeSeq = ({ seq, ...trade }) => trade;
+  const sortFn = sortBy('who')
     .thenBy('account')
     .thenBy('ticker')
     .thenBy('seq');
-  trades.sort(fn);
-  // strip sequence out
-  for (const { seq, ...trade } of trades) {
-    yield trade;
-  }
+  const groupFn = ({ who, account, ticker }) => ({ who, account, ticker });
+
+  return pipeline(
+    readTrades(),
+    map(addSeq),
+    sort(sortFn),
+    map(removeSeq),
+    group(groupFn),
+    map(([key, trades]) => addCosts(trades))
+  )
 }
 
-function * rawTrades (rows) {
+function addCosts (trades) {
+  const pos = { cost: 0, qty: 0 };
+
+  const isBuy = ({ qty, cost }) => qty && cost && qty > 0;
+  const isSell = ({ qty, cost }) => qty && cost && qty < 0;
+  const adjQty = trade => {
+    pos.qty += trade.qty;
+    return trade
+  };
+  const adjCost = trade => {
+    pos.cost += trade.cost;
+    return trade
+  };
+  const buy = trade => adjQty(adjCost(trade));
+  const sell = trade => {
+    const prev = { ...pos };
+    const proceeds = -trade.cost;
+    pos.qty += trade.qty;
+    const portionLeft = prev.qty ? pos.qty / prev.qty : 0;
+    pos.cost = Math.round(portionLeft * prev.cost);
+    trade.cost = pos.cost - prev.cost;
+    trade.gain = proceeds + trade.cost;
+    return trade
+  };
+
+  trades = trades.map(trade => {
+    if (isBuy(trade)) return buy(trade)
+    if (isSell(trade)) return sell(trade)
+    if (trade.qty) return adjQty(trade)
+    if (trade.cost) return adjCost(trade)
+    return trade
+  });
+  return trades
+}
+
+function readTrades () {
   const account = 'Dealing';
   let who;
   let ticker;
-  for (const row of rows) {
-    const [who_, ticker_, date_, qty, cost, notes] = row;
-    if (who_) who = who_;
-    if (ticker_) ticker = ticker_;
-    if (typeof date_ !== 'number') continue
-    if (qty && typeof qty !== 'number') continue
-    if (cost && typeof cost !== 'number') continue
-    if (!qty && !cost) continue
-    const date = toDate(date_);
-    yield {
-      who,
-      ticker,
-      account,
-      date,
-      qty,
-      cost: Math.round(cost * 100),
-      notes
-    };
+
+  return pipeline(map(rowToTrade), filter(validTrade), map(cleanTrade))
+
+  function rowToTrade ([who_, ticker_, date, qty, cost, notes]) {
+    who = who_ || who;
+    ticker = ticker_ || ticker;
+    return { who, account, ticker, date, qty, cost, notes }
+  }
+
+  function validTrade ({ who, ticker, date, qty, cost }) {
+    if (!who || !ticker || typeof date !== 'number') return false
+    if (qty && typeof qty !== 'number') return false
+    if (cost && typeof cost !== 'number') return false
+    return qty || cost
+  }
+
+  function cleanTrade ({ date, cost, ...rest }) {
+    return {
+      ...rest,
+      date: toDate(date),
+      cost: cost ? Math.round(cost * 100) : cost
+    }
   }
 }
 
@@ -1087,37 +1119,36 @@ async function exportPositions (portfolio) {
 }
 
 function getPositionsSheet (portfolio) {
-  const rows = positionRows(getPositions(portfolio));
-  const fn = sortBy(0)
-    .thenBy(1)
-    .thenBy(2);
-  return [...rows].sort(fn)
-}
+  const { stocks, positions } = portfolio;
 
-function * getPositions ({ positions, stocks }) {
-  for (const position of positions.values()) {
-    if (!position.qty) continue
-    const stock = stocks.get(position.ticker);
-    yield { stock, position };
-  }
-}
+  const hasQty = pos => !!pos.qty;
+  const addStock = position => ({
+    position,
+    stock: stocks.get(position.ticker)
+  });
+  const sortFn = sortBy('ticker')
+    .thenBy('who')
+    .thenBy('account');
+  const makeRow = ({ position: p, stock: s }) => [
+    p.ticker,
+    p.who,
+    p.account,
+    p.qty,
+    s.price || '',
+    s.dividend || '',
+    s.dividend && s.price ? s.dividend / s.price : '',
+    Math.round(p.qty * s.price) / 100 || '',
+    s.dividend ? Math.round(p.qty * s.dividend) / 100 : ''
+  ];
 
-function * positionRows (source) {
-  for (const { position, stock } of source) {
-    const { who, account, ticker, qty } = position;
-    const { dividend, price } = stock;
-    yield [
-      ticker,
-      who,
-      account,
-      qty,
-      price || '',
-      dividend || '',
-      dividend && price ? dividend / price : '',
-      Math.round(qty * price) / 100 || '',
-      dividend ? Math.round(qty * dividend) / 100 : ''
-    ];
-  }
+  const xform = pipeline(
+    filter(hasQty),
+    sort(sortFn),
+    map(addStock),
+    map(makeRow)
+  );
+
+  return [...xform(positions.values())]
 }
 
 const debug = log
@@ -1131,35 +1162,23 @@ async function exportTrades (portfolio) {
 }
 
 function getTradesSheet ({ trades }) {
-  let source = trades.values();
-  source = sortTrades(source);
-  source = makeRows(source);
-  return [...source]
-}
-
-function * sortTrades (source) {
-  const fn = sortBy('who')
+  const sortFn = sortBy('who')
     .thenBy('account')
     .thenBy('ticker')
     .thenBy('seq');
-  const rows = [...source];
-  rows.sort(fn);
-  yield * rows;
-}
+  const makeRow = ({ who, account, ticker, date, qty, cost, gain }) => [
+    who,
+    account,
+    ticker,
+    date,
+    qty || '',
+    cost ? cost / 100 : '',
+    gain ? gain / 100 : ''
+  ];
 
-function * makeRows (source) {
-  for (const trade of source) {
-    const { who, account, ticker, date, qty, cost, gain } = trade;
-    yield [
-      who,
-      account,
-      ticker,
-      date,
-      qty || '',
-      cost ? cost / 100 : '',
-      gain ? gain / 100 : ''
-    ];
-  }
+  const xform = pipeline(sort(sortFn), map(makeRow));
+
+  return [...xform(trades.values())]
 }
 
 async function update (options) {

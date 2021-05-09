@@ -1,7 +1,7 @@
 import log from 'logjs'
 import { toDate } from 'googlejs/sheets'
-import equal from 'pixutil/equal'
 import sortBy from 'sortby'
+import { pipeline, group, sort, filter, map } from 'teme'
 
 import { getTradesSheet } from './sheets.mjs'
 
@@ -16,16 +16,13 @@ export async function importFromTradesSheet (portfolio) {
   updateTrades(portfolio.trades, rangeData)
 }
 
-function updateTrades (trades, source) {
-  source = rawTrades(source)
-  source = sortTrades(source)
-  source = groupTrades(source)
-  source = addCosts(source)
+function updateTrades (trades, rangeData) {
+  const groups = makeExtractor()(rangeData)
 
   let nGroups = 0
   let nTrades = 0
 
-  for (const group of source) {
+  for (const group of groups) {
     if (!group.length) continue
     nGroups++
     nTrades += group.length
@@ -35,84 +32,86 @@ function updateTrades (trades, source) {
   debug('Updated %d positions with %d trades', nGroups, nTrades)
 }
 
-function * addCosts (source) {
-  for (const trades of source) {
-    const pos = { cost: 0, qty: 0 }
-    for (const trade of trades) {
-      if (trade.qty && trade.cost && trade.qty > 0) {
-        pos.qty += trade.qty
-        pos.cost += trade.cost
-      } else if (trade.qty && trade.cost && trade.qty < 0) {
-        const prevPos = { ...pos }
-        pos.qty += trade.qty
-        pos.cost = prevPos.qty
-          ? Math.round((prevPos.cost * pos.qty) / prevPos.qty)
-          : 0
-        const proceeds = -trade.cost
-        trade.cost = pos.cost - prevPos.cost
-        trade.gain = proceeds + trade.cost
-      } else if (trade.qty) {
-        pos.qty += trade.qty
-      } else if (trade.cost) {
-        pos.cost += trade.cost
-      }
-    }
-    yield trades
-  }
-}
-
-function * groupTrades (source) {
-  const getKey = ({ who, account, ticker }) => ({ who, account, ticker })
-  let currkey
-  let trades = []
-  for (const trade of source) {
-    const key = getKey(trade)
-    if (!equal(key, currkey)) {
-      if (trades.length) yield trades
-      currkey = key
-      trades = []
-    }
-    trades.push(trade)
-  }
-  if (trades.length) yield trades
-}
-
-function * sortTrades (source) {
-  const trades = [...source]
-  // add sequence to ensure stable sort
-  trades.forEach((trade, seq) => Object.assign(trade, { seq }))
-  const fn = sortBy('who')
+function makeExtractor () {
+  let seq = 0
+  const addSeq = trade => ({ ...trade, seq: seq++ })
+  const removeSeq = ({ seq, ...trade }) => trade
+  const sortFn = sortBy('who')
     .thenBy('account')
     .thenBy('ticker')
     .thenBy('seq')
-  trades.sort(fn)
-  // strip sequence out
-  for (const { seq, ...trade } of trades) {
-    yield trade
-  }
+  const groupFn = ({ who, account, ticker }) => ({ who, account, ticker })
+
+  return pipeline(
+    readTrades(),
+    map(addSeq),
+    sort(sortFn),
+    map(removeSeq),
+    group(groupFn),
+    map(([key, trades]) => addCosts(trades))
+  )
 }
 
-function * rawTrades (rows) {
+function addCosts (trades) {
+  const pos = { cost: 0, qty: 0 }
+
+  const isBuy = ({ qty, cost }) => qty && cost && qty > 0
+  const isSell = ({ qty, cost }) => qty && cost && qty < 0
+  const adjQty = trade => {
+    pos.qty += trade.qty
+    return trade
+  }
+  const adjCost = trade => {
+    pos.cost += trade.cost
+    return trade
+  }
+  const buy = trade => adjQty(adjCost(trade))
+  const sell = trade => {
+    const prev = { ...pos }
+    const proceeds = -trade.cost
+    pos.qty += trade.qty
+    const portionLeft = prev.qty ? pos.qty / prev.qty : 0
+    pos.cost = Math.round(portionLeft * prev.cost)
+    trade.cost = pos.cost - prev.cost
+    trade.gain = proceeds + trade.cost
+    return trade
+  }
+
+  trades = trades.map(trade => {
+    if (isBuy(trade)) return buy(trade)
+    if (isSell(trade)) return sell(trade)
+    if (trade.qty) return adjQty(trade)
+    if (trade.cost) return adjCost(trade)
+    return trade
+  })
+  return trades
+}
+
+function readTrades () {
   const account = 'Dealing'
   let who
   let ticker
-  for (const row of rows) {
-    const [who_, ticker_, date_, qty, cost, notes] = row
-    if (who_) who = who_
-    if (ticker_) ticker = ticker_
-    if (typeof date_ !== 'number') continue
-    if (qty && typeof qty !== 'number') continue
-    if (cost && typeof cost !== 'number') continue
-    if (!qty && !cost) continue
-    const date = toDate(date_)
-    yield {
-      who,
-      ticker,
-      account,
-      date,
-      qty,
-      cost: Math.round(cost * 100),
-      notes
+
+  return pipeline(map(rowToTrade), filter(validTrade), map(cleanTrade))
+
+  function rowToTrade ([who_, ticker_, date, qty, cost, notes]) {
+    who = who_ || who
+    ticker = ticker_ || ticker
+    return { who, account, ticker, date, qty, cost, notes }
+  }
+
+  function validTrade ({ who, ticker, date, qty, cost }) {
+    if (!who || !ticker || typeof date !== 'number') return false
+    if (qty && typeof qty !== 'number') return false
+    if (cost && typeof cost !== 'number') return false
+    return qty || cost
+  }
+
+  function cleanTrade ({ date, cost, ...rest }) {
+    return {
+      ...rest,
+      date: toDate(date),
+      cost: cost ? Math.round(cost * 100) : cost
     }
   }
 }

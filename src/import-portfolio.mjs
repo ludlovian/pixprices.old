@@ -46,11 +46,10 @@ function * getStockData (rangeData, options = {}) {
     const ticker = row[tickerColumn]
     if (!ticker) continue
     const div = row[divColumn]
-    const item = { ticker }
-    if (!div || typeof div !== 'number') {
-      item.dividend = undefined
-    } else {
-      item.dividend = Math.round(div * 1e5) / 1e3
+    const item = {
+      ticker,
+      dividend:
+        div && typeof div === 'number' ? Math.round(div * 1e5) / 1e3 : undefined
     }
     yield item
   }
@@ -74,28 +73,25 @@ function updatePositions (positions, rangeData, options) {
 
 function * getPositionData (rangeData, options = {}) {
   const {
-    tickerColumn = DEFAULT_TICKER_COLUMN,
-    accountStartColumn = DEFAULT_ACCOUNT_COLUMN,
-    accountList = DEFAULT_ACCOUNT_LIST
+    tickerCol = DEFAULT_TICKER_COLUMN,
+    accountCol = DEFAULT_ACCOUNT_COLUMN,
+    accounts = DEFAULT_ACCOUNT_LIST
   } = options
 
-  const accounts = accountList.split(';').map(code => {
-    const [who, account] = code.split(',')
-    return { who, account }
-  })
+  const accts = accounts
+    .split(';')
+    .map(code => code.split(','))
+    .map(([who, account]) => ({ who, account }))
 
   for (const row of rangeData) {
-    const ticker = row[tickerColumn]
+    const ticker = row[tickerCol]
     if (!ticker) continue
 
-    const qtys = row.slice(
-      accountStartColumn,
-      accountStartColumn + accounts.length
-    )
-    for (const [i, qty] of qtys.entries()) {
-      if (!qty || typeof qty !== 'number') continue
+    const positions = row
+      .slice(accountCol, accountCol + accts.length)
+      .map((qty, i) => ({ ...accts[i], ticker, qty }))
+      .filter(({ qty }) => qty && typeof qty === 'number')
 
-      yield { ...accounts[i], ticker, qty }
-    }
+    yield * positions
   }
 }

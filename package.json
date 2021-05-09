@@ -27,7 +27,8 @@
     "logjs": "github:ludlovian/logjs",
     "pixutil": "github:ludlovian/pixutil#semver:^1.1.0",
     "sade": "^1.7.4",
-    "sortby": "github:ludlovian/sortby#semver:^1.0.0"
+    "sortby": "github:ludlovian/sortby#semver:^1.0.0",
+    "teme": "github:ludlovian/teme"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^11.2.1",
