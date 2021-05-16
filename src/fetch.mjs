@@ -11,7 +11,7 @@ const debug = log
 const attempts = [
   ['ftse-all-share', fetchIndex],
   ['ftse-aim-all-share', fetchIndex],
-  ['alternative-investment-instruments', fetchSector]
+  ['closed-end-investments', fetchSector]
 ]
 
 export async function fetchPrices (stocks) {
