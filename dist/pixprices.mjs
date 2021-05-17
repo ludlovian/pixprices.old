@@ -52,19 +52,83 @@ function clone (o) {
   }, {})
 }
 
-function batch (size) {
-  return function * (source) {
-    let batch = [];
-    for (const item of source) {
-      batch.push(item);
-      if (batch.length === size) {
-        yield batch;
-        batch = [];
-      }
+function SyncEvent () {
+  const queue = [];
+  let isSet = false;
+  return {
+    async wait () {
+      if (!isSet) return new Promise(resolve => queue.push(resolve))
+      isSet = false;
+    },
+
+    set () {
+      if (!isSet && queue.length) return queue.shift()()
+      isSet = true;
+    },
+
+    get isSet () {
+      return isSet
     }
-    if (batch.length) yield batch;
   }
 }
+
+function Pipe (length = 100) {
+  const queue = [];
+  const hasData = new SyncEvent();
+  const hasRoom = new SyncEvent();
+  hasRoom.set();
+
+  const reader = (async function * () {
+    while (true) {
+      await hasData.wait();
+      const { value, done, error } = queue.shift();
+      if (error) throw error
+      if (done) return
+      setEvents();
+      yield value;
+    }
+  })();
+
+  const writer = {
+    async write (value) {
+      if (writer.closed) throw new PipeClosed()
+      await _write({ value });
+    },
+
+    async throw (error) {
+      if (writer.closed) throw new PipeClosed()
+      writer.closed = true;
+      await _write({ error });
+    },
+
+    async close () {
+      if (writer.closed) return
+      writer.closed = true;
+      await _write({ done: true });
+    }
+  };
+
+  async function _write (item) {
+    await hasRoom.wait();
+    queue.push(item);
+    setEvents();
+  }
+
+  function setEvents () {
+    if (queue.length && !hasData.isSet) hasData.set();
+    if (queue.length < length && !hasRoom.isSet) hasRoom.set();
+  }
+
+  return [reader, writer]
+}
+
+class PipeClosed extends Error {
+  constructor () {
+    super('Pipe closed');
+  }
+}
+
+Pipe.PipeClosed = PipeClosed;
 
 const has = Object.prototype.hasOwnProperty;
 
@@ -91,6 +155,293 @@ function equal (a, b) {
   }
   return Object.keys(a).length === Object.keys(b).length
 }
+
+const AITER = Symbol.asyncIterator;
+const SITER = Symbol.iterator;
+/* c8 ignore next */
+const EMPTY = () => {};
+function returnThis () {
+  return this
+}
+
+class Teme {
+  static from (src) {
+    if (src instanceof Teme) return src
+    const t = new Teme();
+    const it = src[AITER]();
+    async function next () {
+      const item = await it.next();
+      Object.assign(this, item);
+      return item
+    }
+    Object.defineProperties(t, {
+      [AITER]: { value: returnThis, configurable: true },
+      next: { value: next, configurable: true }
+    });
+    return t
+  }
+
+  constructor (src) {
+    this.done = undefined;
+    this.value = undefined;
+  }
+
+  get isSync () {
+    return false
+  }
+
+  get isAsync () {
+    return !this.isSync
+  }
+
+  toAsync () {
+    return this
+  }
+
+  map (fn, ctx) {
+    return Teme.from(gen(this))
+    async function * gen (src) {
+      for await (const v of src) yield await fn(v, ctx);
+    }
+  }
+
+  filter (fn) {
+    return Teme.from(gen(this))
+    async function * gen (src) {
+      for await (const v of src) {
+        if (fn(v)) yield v;
+      }
+    }
+  }
+
+  async collect () {
+    const arr = [];
+    for await (const v of this) arr.push(v);
+    return arr
+  }
+
+  sort (fn) {
+    return Teme.from(gen(this))
+    async function * gen (src) {
+      const arr = await src.collect();
+      yield * arr.sort(fn);
+    }
+  }
+
+  each (fn) {
+    return this.map(async v => {
+      await fn(v);
+      return v
+    })
+  }
+
+  scan (fn, accum) {
+    return this.map(async v => {
+      accum = await fn(accum, v);
+      return accum
+    })
+  }
+
+  group (fn) {
+    return Teme.from(gen(this))
+    async function * gen (src) {
+      let tgt = EMPTY;
+      let key = EMPTY;
+      let item = {};
+      while (!item.done) {
+        while (equal(key, tgt)) {
+          item = await src.next();
+          if (item.done) return
+          key = fn(item.value);
+        }
+        tgt = key;
+        yield [key, Teme.from(grouper())];
+      }
+      async function * grouper () {
+        while (equal(key, tgt)) {
+          yield item.value;
+          item = await src.next();
+          if (item.done) return
+          key = fn(item.value);
+        }
+      }
+    }
+  }
+
+  batch (size) {
+    let n = 0;
+    const addCtx = value => ({ value, seq: (n++ / size) | 0 });
+    const remCtx = ({ value }) => value;
+    const seqKey = ({ seq }) => seq;
+    const pullGroup = ([, group]) => group.map(remCtx);
+    return this.map(addCtx)
+      .group(seqKey)
+      .map(pullGroup)
+  }
+
+  dedupe (fn = equal) {
+    let prev = EMPTY;
+    return this.filter(v => {
+      if (fn(prev, v)) return false
+      prev = v;
+      return true
+    })
+  }
+
+  async consume () {
+    while (true) {
+      const { done } = await this.next();
+      if (done) return
+    }
+  }
+
+  tee (fn, size) {
+    const [reader, writer] = new Pipe(size);
+    fn(Teme.from(reader));
+    async function * gen (src) {
+      for await (const v of src) {
+        await writer.write(v);
+        yield v;
+      }
+      await writer.close();
+    }
+    return Teme.from(gen(this))
+  }
+}
+
+class TemeSync extends Teme {
+  static from (src) {
+    if (src instanceof Teme) return src
+    const t = new TemeSync();
+    const it = src[SITER]();
+    function next () {
+      const item = it.next();
+      Object.assign(this, item);
+      return item
+    }
+    Object.defineProperties(t, {
+      [SITER]: { value: returnThis, configurable: true },
+      next: { value: next, configurable: true }
+    });
+    return t
+  }
+
+  get isSync () {
+    return true
+  }
+
+  toAsync () {
+    return Teme.from(gen(this))
+    async function * gen (src) {
+      yield * src;
+    }
+  }
+
+  map (fn, ctx) {
+    return TemeSync.from(gen(this))
+    function * gen (src) {
+      for (const v of src) yield fn(v, ctx);
+    }
+  }
+
+  filter (fn) {
+    return TemeSync.from(gen(this))
+    function * gen (src) {
+      for (const v of src) {
+        if (fn(v)) yield v;
+      }
+    }
+  }
+
+  collect () {
+    return [...this]
+  }
+
+  sort (fn) {
+    return TemeSync.from(this.collect().sort(fn))
+  }
+
+  each (fn) {
+    return this.map(v => {
+      fn(v);
+      return v
+    })
+  }
+
+  scan (fn, accum) {
+    return this.map(v => {
+      accum = fn(accum, v);
+      return accum
+    })
+  }
+
+  group (fn) {
+    return TemeSync.from(gen(this))
+    function * gen (src) {
+      let tgt = EMPTY;
+      let key = EMPTY;
+      let item = {};
+      while (!item.done) {
+        while (equal(key, tgt)) {
+          item = src.next();
+          if (item.done) return
+          key = fn(item.value);
+        }
+        tgt = key;
+        yield [key, TemeSync.from(grouper())];
+      }
+      function * grouper () {
+        while (equal(key, tgt)) {
+          yield item.value;
+          item = src.next();
+          if (item.done) return
+          key = fn(item.value);
+        }
+      }
+    }
+  }
+
+  consume () {
+    while (true) {
+      const { done } = this.next();
+      if (done) return
+    }
+  }
+
+  tee (fn) {
+    return this.toAsync().tee(fn)
+  }
+}
+
+function teme (s) {
+  if (typeof s[SITER] === 'function') return TemeSync.from(s)
+  if (typeof s[AITER] === 'function') return Teme.from(s)
+  throw new Error('Not iterable')
+}
+
+teme.join = function join (...sources) {
+  const [reader, writer] = new Pipe();
+  sources.forEach(feed);
+  let open = sources.length;
+  if (!open) writer.close();
+  return Teme.from(reader)
+
+  async function feed (stream, index) {
+    try {
+      for await (const value of stream) {
+        if (writer.closed) return
+        await writer.write([value, index]);
+      }
+      if (!--open) await writer.close();
+    } catch (error) {
+      writer.throw(Object.assign(error, { index }));
+    }
+  }
+};
+
+teme.isTeme = function isTeme (t) {
+  return t instanceof Teme
+};
 
 const colourFuncs = { cyan, green, yellow, blue, magenta, red };
 const colours = Object.keys(colourFuncs);
@@ -227,10 +578,7 @@ class Table {
   }
 
   async select (options) {
-    const entities = [];
-    for await (const entity of this.fetch(options)) {
-      entities.push(entity);
-    }
+    const entities = await teme(this.fetch(options)).collect();
     debug$7('%d records loaded from %s', entities.length, this.kind);
     return entities
   }
@@ -305,23 +653,23 @@ const getDatastoreAPI = once(async function getDatastoreAPI ({
   return datastore
 });
 
-function * getEntities (arr, { kind, datastore, group = 400 }) {
-  const entities = arrify(arr)
+function getEntities (arr, { kind, datastore, size = 400 }) {
+  return teme(arrify(arr))
     .filter(row => !(row instanceof Row) || row._changed())
     .map(row => ({
       key: row._key || datastore.key([kind]),
       data: clone(row)
-    }));
-
-  yield * batch(group)(entities);
+    }))
+    .batch()
+    .map(group => group.collect())
 }
 
-function * getKeys (arr, { group = 400 } = {}) {
-  const keys = arrify(arr)
+function getKeys (arr, { size = 400 } = {}) {
+  return teme(arrify(arr))
     .filter(row => row instanceof Row)
-    .map(row => row._key);
-
-  yield * batch(group)(keys);
+    .map(row => row._key)
+    .batch(group)
+    .map(group => group.collect())
 }
 
 class IndexedTable extends Table {
@@ -799,48 +1147,10 @@ function * getPositionData (rangeData, options = {}) {
   }
 }
 
-function group (fn) {
-  return function * (src) {
-    let prev = Symbol('null');
-    let group = [];
-    for (const item of src) {
-      const curr = fn(item);
-      if (!equal(curr, prev)) {
-        if (group.length) yield [prev, group];
-        group = [];
-        prev = curr;
-      }
-      group.push(item);
-    }
-    if (group.length) yield [prev, group];
-  }
-}
-
-function filter (fn) {
-  return function * filter (src) {
-    for (const item of src) {
-      if (fn(item)) yield item;
-    }
-  }
-}
-
-function map (fn) {
-  return function * map (src) {
-    for (const item of src) {
-      yield fn(item);
-    }
-  }
-}
-
-function pipeline (...xforms) {
-  return src => xforms.reduce((s, xform) => xform(s), src)
-}
-
-function sort (fn) {
-  return function * (source) {
-    const data = [...source];
-    yield * data.sort(fn);
-  }
+function pipeline (...fns) {
+  const src = typeof fns[0] !== 'function' ? fns.shift() : null;
+  const composed = obj => fns.reduce((o, fn) => fn(o), obj);
+  return src === null ? composed : composed(src)
 }
 
 const debug$4 = log
@@ -848,19 +1158,13 @@ const debug$4 = log
   .colour()
   .level(2);
 
-async function importFromTradesSheet (portfolio) {
+async function importFromTradesSheet ({ trades }) {
   const rangeData = await getTradesSheet$1();
-
-  updateTrades(portfolio.trades, rangeData);
-}
-
-function updateTrades (trades, rangeData) {
-  const groups = makeExtractor()(rangeData);
 
   let nGroups = 0;
   let nTrades = 0;
 
-  for (const group of groups) {
+  for (const group of getTradeGroups(rangeData)) {
     if (!group.length) continue
     nGroups++;
     nTrades += group.length;
@@ -870,86 +1174,87 @@ function updateTrades (trades, rangeData) {
   debug$4('Updated %d positions with %d trades', nGroups, nTrades);
 }
 
-function makeExtractor () {
-  let seq = 0;
-  const addSeq = trade => ({ ...trade, seq: seq++ });
-  const removeSeq = ({ seq, ...trade }) => trade;
-  const sortFn = sortBy('who')
-    .thenBy('account')
-    .thenBy('ticker')
-    .thenBy('seq');
-  const groupFn = ({ who, account, ticker }) => ({ who, account, ticker });
-
-  return pipeline(
-    readTrades(),
-    map(addSeq),
-    sort(sortFn),
-    map(removeSeq),
-    group(groupFn),
-    map(([key, trades]) => addCosts(trades))
-  )
+function getTradeGroups (rows) {
+  return pipeline(teme(rows), readTrades, sortTrades, groupTrades, addCosts)
 }
 
-function addCosts (trades) {
-  const pos = { cost: 0, qty: 0 };
-
-  const isBuy = ({ qty, cost }) => qty && cost && qty > 0;
-  const isSell = ({ qty, cost }) => qty && cost && qty < 0;
-  const adjQty = trade => {
-    pos.qty += trade.qty;
-    return trade
-  };
-  const adjCost = trade => {
-    pos.cost += trade.cost;
-    return trade
-  };
-  const buy = trade => adjQty(adjCost(trade));
-  const sell = trade => {
-    const prev = { ...pos };
-    const proceeds = -trade.cost;
-    pos.qty += trade.qty;
-    const portionLeft = prev.qty ? pos.qty / prev.qty : 0;
-    pos.cost = Math.round(portionLeft * prev.cost);
-    trade.cost = pos.cost - prev.cost;
-    trade.gain = proceeds + trade.cost;
-    return trade
-  };
-
-  trades = trades.map(trade => {
-    if (isBuy(trade)) return buy(trade)
-    if (isSell(trade)) return sell(trade)
-    if (trade.qty) return adjQty(trade)
-    if (trade.cost) return adjCost(trade)
-    return trade
-  });
-  return trades
+function readTrades (rows) {
+  return rows
+    .map(rowToTrade())
+    .filter(validTrade)
+    .map(cleanTrade)
 }
 
-function readTrades () {
+function rowToTrade () {
   const account = 'Dealing';
   let who;
   let ticker;
-
-  return pipeline(map(rowToTrade), filter(validTrade), map(cleanTrade))
-
-  function rowToTrade ([who_, ticker_, date, qty, cost, notes]) {
+  return ([who_, ticker_, date, qty, cost, notes]) => {
     who = who_ || who;
     ticker = ticker_ || ticker;
     return { who, account, ticker, date, qty, cost, notes }
   }
+}
 
-  function validTrade ({ who, ticker, date, qty, cost }) {
-    if (!who || !ticker || typeof date !== 'number') return false
-    if (qty && typeof qty !== 'number') return false
-    if (cost && typeof cost !== 'number') return false
-    return qty || cost
+function validTrade ({ who, ticker, date, qty, cost }) {
+  if (!who || !ticker || typeof date !== 'number') return false
+  if (qty && typeof qty !== 'number') return false
+  if (cost && typeof cost !== 'number') return false
+  return qty || cost
+}
+
+function cleanTrade ({ date, cost, ...rest }) {
+  return {
+    ...rest,
+    date: toDate(date),
+    cost: cost ? Math.round(cost * 100) : cost
   }
+}
 
-  function cleanTrade ({ date, cost, ...rest }) {
-    return {
-      ...rest,
-      date: toDate(date),
-      cost: cost ? Math.round(cost * 100) : cost
+function sortTrades (trades) {
+  const sortFn = sortBy('who')
+    .thenBy('account')
+    .thenBy('ticker')
+    .thenBy('seq');
+
+  let seq = 0;
+
+  return trades
+    .map(trade => ({ ...trade, seq: seq++ }))
+    .sort(sortFn)
+    .map(({ seq, ...trade }) => trade)
+}
+
+function groupTrades (trades) {
+  return trades
+    .group(({ who, account, ticker }) => ({ who, account, ticker }))
+    .map(([, group]) => group)
+}
+
+function addCosts (groups) {
+  return groups.map(group => group.each(buildPosition()).collect())
+}
+
+function buildPosition () {
+  const pos = { qty: 0, cost: 0 };
+  return trade => {
+    const { qty, cost } = trade;
+    if (qty && cost && qty > 0) {
+      // buy
+      pos.qty += qty;
+      pos.cost += cost;
+    } else if (qty && cost && qty < 0) {
+      const prev = { ...pos };
+      const proceeds = -cost;
+      pos.qty += trade.qty;
+      const remain = prev.qty ? pos.qty / prev.qty : 0;
+      pos.cost = Math.round(remain * prev.cost);
+      trade.cost = pos.cost - prev.cost;
+      trade.gain = proceeds + trade.cost;
+    } else if (qty) {
+      pos.qty += qty;
+    } else if (cost) {
+      pos.cost += cost;
     }
   }
 }
@@ -966,7 +1271,7 @@ const debug$3 = log
 const USER_AGENT =
   'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36';
 
-async function fetchIndex (indexName) {
+function fetchIndex (indexName) {
   // ftse-all-share
   // ftse-aim-all-share
   const url = `https://www.lse.co.uk/share-prices/indices/${indexName}/constituents.html`;
@@ -977,13 +1282,13 @@ async function fetchIndex (indexName) {
   )
 }
 
-async function fetchSector (sectorName) {
+function fetchSector (sectorName) {
   // alternative-investment-instruments
   const url = `https://www.lse.co.uk/share-prices/sectors/${sectorName}/constituents.html`;
   return fetchCollection(url, 'sp-sectors__table', `lse:sector:${sectorName}`)
 }
 
-async function fetchCollection (url, collClass, source) {
+async function * fetchCollection (url, collClass, source) {
   await sleep(1000);
 
   const now = new Date();
@@ -994,27 +1299,25 @@ async function fetchCollection (url, collClass, source) {
   };
   const { data: html } = await get(url, fetchOpts);
   const $ = cheerio.load(html);
-  const items = [];
-  $(`table.${collClass} tr`)
+  const items = $(`table.${collClass} tr`)
     .has('td')
-    .each((i, tr) => {
-      const values = [];
-      $('td', tr).each((j, td) => {
-        values.push($(td).text());
-      });
-
+    .map((i, tr) => {
+      const values = $('td', tr)
+        .map((j, td) => $(td).text())
+        .toArray();
       const { name, ticker } = extractNameAndTicker(values[0]);
       const price = extractNumber(values[1]);
-      items.push({
+      return {
         ticker,
         name,
         price,
         priceUpdated: now,
         priceSource: source
-      });
-    });
+      }
+    })
+    .toArray();
   debug$3('Read %d items from %s', items.length, source);
-  return items
+  yield * items;
 }
 
 async function fetchPrice (ticker) {
@@ -1077,35 +1380,34 @@ const attempts = [
   ['closed-end-investments', fetchSector]
 ];
 
-async function fetchPrices (stocks) {
-  const neededTickers = new Set([...stocks.values()].map(s => s.ticker));
+async function updatePrices (stocks) {
+  const tickers = [...stocks.values()].map(s => s.ticker);
+  const prices = getPrices(tickers);
+  for await (const item of prices) {
+    stocks.set(item);
+  }
+}
+
+async function * getPrices (tickers) {
+  const needed = new Set(tickers);
+  const isNeeded = ({ ticker }) => needed.delete(ticker);
 
   for (const [name, fetchFunc] of attempts) {
-    const items = await fetchFunc(name);
-    let count = 0;
-    for (const item of items) {
-      if (!neededTickers.has(item.ticker)) continue
-      stocks.set(item);
-      neededTickers.delete(item.ticker);
-      count++;
-    }
-    debug$2('%d prices from %s', count, name);
-    if (!neededTickers.size) break
+    let n = 0;
+    const prices = teme(fetchFunc(name))
+      .filter(isNeeded)
+      .each(() => n++);
+    yield * prices;
+    debug$2('%d prices from %s', n, name);
+
+    if (!needed.size) return
   }
 
   // now pick up the remaining ones
-  for (const ticker of neededTickers) {
-    const item = await fetchPrice(ticker);
-    stocks.set(item);
+  for (const ticker of needed) {
+    yield await fetchPrice(ticker);
   }
-
-  if (neededTickers) {
-    debug$2(
-      '%d prices individually: %s',
-      neededTickers.size,
-      [...neededTickers].join(', ')
-    );
-  }
+  debug$2('%d prices individually: %s', needed.size, [...needed].join(', '));
 }
 
 const debug$1 = log
@@ -1114,22 +1416,32 @@ const debug$1 = log
   .level(2);
 
 async function exportPositions (portfolio) {
-  updatePositionsSheet(getPositionsSheet(portfolio));
+  await updatePositionsSheet(getPositionsSheet(portfolio));
   debug$1('position sheet updated');
 }
 
-function getPositionsSheet (portfolio) {
-  const { stocks, positions } = portfolio;
-
-  const hasQty = pos => !!pos.qty;
-  const addStock = position => ({
-    position,
-    stock: stocks.get(position.ticker)
-  });
+function getPositionsSheet ({ stocks, positions }) {
   const sortFn = sortBy('ticker')
     .thenBy('who')
     .thenBy('account');
-  const makeRow = ({ position: p, stock: s }) => [
+
+  return teme(positions.values())
+    .filter(({ qty }) => qty)
+    .map(addStock(stocks))
+    .sort(sortFn)
+    .map(makePositionRow)
+    .collect()
+}
+
+function addStock (stocks) {
+  return position => ({
+    position,
+    stock: stocks.get(position.ticker)
+  })
+}
+
+function makePositionRow ({ position: p, stock: s }) {
+  return [
     p.ticker,
     p.who,
     p.account,
@@ -1139,16 +1451,7 @@ function getPositionsSheet (portfolio) {
     s.dividend && s.price ? s.dividend / s.price : '',
     Math.round(p.qty * s.price) / 100 || '',
     s.dividend ? Math.round(p.qty * s.dividend) / 100 : ''
-  ];
-
-  const xform = pipeline(
-    filter(hasQty),
-    sort(sortFn),
-    map(addStock),
-    map(makeRow)
-  );
-
-  return [...xform(positions.values())]
+  ]
 }
 
 const debug = log
@@ -1157,7 +1460,7 @@ const debug = log
   .level(2);
 
 async function exportTrades (portfolio) {
-  updateTradesSheet(getTradesSheet(portfolio));
+  await updateTradesSheet(getTradesSheet(portfolio));
   debug('trades sheet updated');
 }
 
@@ -1166,7 +1469,15 @@ function getTradesSheet ({ trades }) {
     .thenBy('account')
     .thenBy('ticker')
     .thenBy('seq');
-  const makeRow = ({ who, account, ticker, date, qty, cost, gain }) => [
+
+  return teme(trades.values())
+    .sort(sortFn)
+    .map(makeTradeRow)
+    .collect()
+}
+
+function makeTradeRow ({ who, account, ticker, date, qty, cost, gain }) {
+  return [
     who,
     account,
     ticker,
@@ -1174,11 +1485,7 @@ function getTradesSheet ({ trades }) {
     qty || '',
     cost ? cost / 100 : '',
     gain ? gain / 100 : ''
-  ];
-
-  const xform = pipeline(sort(sortFn), map(makeRow));
-
-  return [...xform(trades.values())]
+  ]
 }
 
 async function update (options) {
@@ -1194,7 +1501,7 @@ async function update (options) {
   }
 
   if (options['fetch-prices']) {
-    await fetchPrices(portfolio.stocks);
+    await updatePrices(portfolio.stocks);
   }
 
   await portfolio.save();

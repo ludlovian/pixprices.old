@@ -1,4 +1,5 @@
 import log from 'logjs'
+import teme from 'teme'
 
 import { fetchIndex, fetchSector, fetchPrice } from './fetch-lse.mjs'
 
@@ -14,33 +15,32 @@ const attempts = [
   ['closed-end-investments', fetchSector]
 ]
 
-export async function fetchPrices (stocks) {
-  const neededTickers = new Set([...stocks.values()].map(s => s.ticker))
+export async function updatePrices (stocks) {
+  const tickers = [...stocks.values()].map(s => s.ticker)
+  const prices = getPrices(tickers)
+  for await (const item of prices) {
+    stocks.set(item)
+  }
+}
+
+async function * getPrices (tickers) {
+  const needed = new Set(tickers)
+  const isNeeded = ({ ticker }) => needed.delete(ticker)
 
   for (const [name, fetchFunc] of attempts) {
-    const items = await fetchFunc(name)
-    let count = 0
-    for (const item of items) {
-      if (!neededTickers.has(item.ticker)) continue
-      stocks.set(item)
-      neededTickers.delete(item.ticker)
-      count++
-    }
-    debug('%d prices from %s', count, name)
-    if (!neededTickers.size) break
+    let n = 0
+    const prices = teme(fetchFunc(name))
+      .filter(isNeeded)
+      .each(() => n++)
+    yield * prices
+    debug('%d prices from %s', n, name)
+
+    if (!needed.size) return
   }
 
   // now pick up the remaining ones
-  for (const ticker of neededTickers) {
-    const item = await fetchPrice(ticker)
-    stocks.set(item)
+  for (const ticker of needed) {
+    yield await fetchPrice(ticker)
   }
-
-  if (neededTickers) {
-    debug(
-      '%d prices individually: %s',
-      neededTickers.size,
-      [...neededTickers].join(', ')
-    )
-  }
+  debug('%d prices individually: %s', needed.size, [...needed].join(', '))
 }

@@ -1,6 +1,6 @@
 import Portfolio from './portfolio.mjs'
 import { importFromPortfolioSheet, importFromTradesSheet } from './import.mjs'
-import { fetchPrices } from './fetch.mjs'
+import { updatePrices } from './fetch.mjs'
 import { exportPositions, exportTrades } from './export.mjs'
 
 export async function update (options) {
@@ -16,7 +16,7 @@ export async function update (options) {
   }
 
   if (options['fetch-prices']) {
-    await fetchPrices(portfolio.stocks)
+    await updatePrices(portfolio.stocks)
   }
 
   await portfolio.save()

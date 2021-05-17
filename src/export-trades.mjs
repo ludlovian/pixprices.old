@@ -1,7 +1,6 @@
 import log from 'logjs'
 import sortBy from 'sortby'
-import { map, pipeline, sort } from 'teme'
-
+import teme from 'teme'
 import { updateTradesSheet } from './sheets.mjs'
 
 const debug = log
@@ -10,7 +9,7 @@ const debug = log
   .level(2)
 
 export async function exportTrades (portfolio) {
-  updateTradesSheet(getTradesSheet(portfolio))
+  await updateTradesSheet(getTradesSheet(portfolio))
   debug('trades sheet updated')
 }
 
@@ -19,7 +18,15 @@ function getTradesSheet ({ trades }) {
     .thenBy('account')
     .thenBy('ticker')
     .thenBy('seq')
-  const makeRow = ({ who, account, ticker, date, qty, cost, gain }) => [
+
+  return teme(trades.values())
+    .sort(sortFn)
+    .map(makeTradeRow)
+    .collect()
+}
+
+function makeTradeRow ({ who, account, ticker, date, qty, cost, gain }) {
+  return [
     who,
     account,
     ticker,
@@ -28,8 +35,4 @@ function getTradesSheet ({ trades }) {
     cost ? cost / 100 : '',
     gain ? gain / 100 : ''
   ]
-
-  const xform = pipeline(sort(sortFn), map(makeRow))
-
-  return [...xform(trades.values())]
 }

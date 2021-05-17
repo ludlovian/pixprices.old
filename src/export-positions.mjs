@@ -1,6 +1,6 @@
 import log from 'logjs'
 import sortBy from 'sortby'
-import { pipeline, filter, sort, map } from 'teme'
+import teme from 'teme'
 
 import { updatePositionsSheet } from './sheets.mjs'
 
@@ -10,22 +10,32 @@ const debug = log
   .level(2)
 
 export async function exportPositions (portfolio) {
-  updatePositionsSheet(getPositionsSheet(portfolio))
+  await updatePositionsSheet(getPositionsSheet(portfolio))
   debug('position sheet updated')
 }
 
-function getPositionsSheet (portfolio) {
-  const { stocks, positions } = portfolio
-
-  const hasQty = pos => !!pos.qty
-  const addStock = position => ({
-    position,
-    stock: stocks.get(position.ticker)
-  })
+function getPositionsSheet ({ stocks, positions }) {
   const sortFn = sortBy('ticker')
     .thenBy('who')
     .thenBy('account')
-  const makeRow = ({ position: p, stock: s }) => [
+
+  return teme(positions.values())
+    .filter(({ qty }) => qty)
+    .map(addStock(stocks))
+    .sort(sortFn)
+    .map(makePositionRow)
+    .collect()
+}
+
+function addStock (stocks) {
+  return position => ({
+    position,
+    stock: stocks.get(position.ticker)
+  })
+}
+
+function makePositionRow ({ position: p, stock: s }) {
+  return [
     p.ticker,
     p.who,
     p.account,
@@ -36,13 +46,4 @@ function getPositionsSheet (portfolio) {
     Math.round(p.qty * s.price) / 100 || '',
     s.dividend ? Math.round(p.qty * s.dividend) / 100 : ''
   ]
-
-  const xform = pipeline(
-    filter(hasQty),
-    sort(sortFn),
-    map(addStock),
-    map(makeRow)
-  )
-
-  return [...xform(positions.values())]
 }

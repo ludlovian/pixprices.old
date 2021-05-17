@@ -11,7 +11,7 @@ const debug = log
 const USER_AGENT =
   'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36'
 
-export async function fetchIndex (indexName) {
+export function fetchIndex (indexName) {
   // ftse-all-share
   // ftse-aim-all-share
   const url = `https://www.lse.co.uk/share-prices/indices/${indexName}/constituents.html`
@@ -22,13 +22,13 @@ export async function fetchIndex (indexName) {
   )
 }
 
-export async function fetchSector (sectorName) {
+export function fetchSector (sectorName) {
   // alternative-investment-instruments
   const url = `https://www.lse.co.uk/share-prices/sectors/${sectorName}/constituents.html`
   return fetchCollection(url, 'sp-sectors__table', `lse:sector:${sectorName}`)
 }
 
-async function fetchCollection (url, collClass, source) {
+async function * fetchCollection (url, collClass, source) {
   await sleep(1000)
 
   const now = new Date()
@@ -39,27 +39,25 @@ async function fetchCollection (url, collClass, source) {
   }
   const { data: html } = await get(url, fetchOpts)
   const $ = cheerio.load(html)
-  const items = []
-  $(`table.${collClass} tr`)
+  const items = $(`table.${collClass} tr`)
     .has('td')
-    .each((i, tr) => {
-      const values = []
-      $('td', tr).each((j, td) => {
-        values.push($(td).text())
-      })
-
+    .map((i, tr) => {
+      const values = $('td', tr)
+        .map((j, td) => $(td).text())
+        .toArray()
       const { name, ticker } = extractNameAndTicker(values[0])
       const price = extractNumber(values[1])
-      items.push({
+      return {
         ticker,
         name,
         price,
         priceUpdated: now,
         priceSource: source
-      })
+      }
     })
+    .toArray()
   debug('Read %d items from %s', items.length, source)
-  return items
+  yield * items
 }
 
 export async function fetchPrice (ticker) {
