@@ -1,5 +1,6 @@
 import log from 'logjs'
 import teme from 'teme'
+import uniq from 'pixutil/uniq'
 
 import { fetchIndex, fetchSector, fetchPrice } from './fetch-lse.mjs'
 
@@ -15,11 +16,15 @@ const attempts = [
   ['closed-end-investments', fetchSector]
 ]
 
-export async function updatePrices (stocks) {
-  const tickers = [...stocks.values()].map(s => s.ticker)
+export async function updatePrices ({ stocks, positions }) {
+  const tickers = uniq([...positions.values()].map(({ ticker }) => ticker))
   const prices = getPrices(tickers)
   for await (const item of prices) {
-    stocks.set(item)
+    const s = stocks.get(item.ticker)
+    stocks.set({
+      ...item,
+      name: s ? s.name || item.name : item.name
+    })
   }
 }
 

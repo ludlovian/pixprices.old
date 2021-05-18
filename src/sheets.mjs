@@ -23,6 +23,12 @@ export async function getTradesSheet () {
   return data
 }
 
+export async function getStocksSheet () {
+  const data = await getSheetData('Stocks', 'Stocks!A:D')
+  debug('Stocks data retrieved')
+  return data
+}
+
 export async function updatePositionsSheet (data) {
   await overwriteSheetData('Positions', 'Positions!A2:I', data)
   await putSheetData('Positions', 'Positions!K1', [[new Date()]])

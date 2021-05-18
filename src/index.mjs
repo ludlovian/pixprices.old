@@ -12,9 +12,11 @@ prog
   .command('update', 'update data')
   .option('--import-portfolio', 'read portfolio sheet')
   .option('--import-trades', 'read trades sheet')
+  .option('--import-stocks', 'read stocks sheet')
   .option('--fetch-prices', 'fetch prices from LSE')
   .option('--export-positions', 'update the positions sheet')
   .option('--export-trades', 'update the trades sheet')
+  .option('--export-stocks', 'write the stocks CSV')
   .action(update)
 
 const parsed = prog.parse(process.argv, {

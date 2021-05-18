@@ -28,12 +28,16 @@ function updateStocks (stocks, rangeData, options) {
     notSeen.delete(stock)
     count++
   }
-  notSeen.forEach(stock => stocks.delete(stock))
+  notSeen.forEach(clearDividend)
   debug(
-    'Updated %d and removed %d stocks from portfolio sheet',
+    'Updated %d and removed %d dividends from portfolio sheet',
     count,
     notSeen.size
   )
+
+  function clearDividend ({ ticker }) {
+    stocks.set({ ticker, dividend: undefined })
+  }
 }
 
 function * getStockData (rangeData, options = {}) {
