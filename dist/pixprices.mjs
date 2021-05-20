@@ -2,8 +2,7 @@
 import sade from 'sade';
 import { format } from 'util';
 import { cyan, green, yellow, blue, magenta, red } from 'kleur/colors';
-import cheerio from 'cheerio';
-import { get } from 'httpie';
+import { get as get$1 } from 'https';
 import { stat, writeFile, unlink } from 'fs/promises';
 import { pipeline as pipeline$1 } from 'stream/promises';
 import { createReadStream } from 'fs';
@@ -1303,13 +1302,223 @@ function sleep (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+const rgxMain = (() => {
+  const textElement = '(?<=^|>)' + '([^<]+)' + '(?=<)';
+  const cdata = '<!\\[CDATA\\[';
+  const comment = '<!--';
+  const script = '<script(?= |>)';
+  const specialElement = '(' + cdata + '|' + script + '|' + comment + ')';
+  const tagElement = '(?:<)' + '([^>]*)' + '(?:>)';
+  return new RegExp(textElement + '|' + specialElement + '|' + tagElement, 'g')
+})();
+const specials = {
+  '<![CDATA[': { rgx: /]]>/, start: 9, end: 3, handler: 'onCData' },
+  '<!--': { rgx: /-->/, start: 4, end: 3 },
+  '<script': { rgx: /<\/script>/, start: 7, end: 9 }
+};
+const CHUNK = 1024;
+
+function parseDoc (hooks = {}) {
+  return Object.assign(new Parser(), hooks)
+}
+
+class Parser {
+  constructor () {
+    this.buff = '';
+    this.special = false;
+  }
+
+  write (s) {
+    this.buff += s;
+    if (this.special) {
+      this.handleSpecial();
+    } else {
+      this.handle();
+    }
+  }
+
+  close () {
+    this.handle();
+    this.buff = '';
+  }
+
+  handle () {
+    rgxMain.lastIndex = undefined;
+    let consumed = 0;
+    while (true) {
+      const m = rgxMain.exec(this.buff);
+      if (!m) break
+      const [, text, special, tag] = m;
+      if (text) {
+        consumed = m.index + text.length;
+        this.onText(text);
+      } else if (tag) {
+        consumed = m.index + tag.length + 2;
+        this.onTag(tag);
+      } else if (special) {
+        this.special = special;
+        const { start } = specials[special];
+        consumed = m.index + start;
+        this.buff = this.buff.slice(consumed);
+        return this.handleSpecial()
+      }
+    }
+    this.buff = this.buff.slice(consumed);
+  }
+
+  handleSpecial () {
+    const { rgx, end, handler } = specials[this.special];
+    const match = rgx.exec(this.buff);
+    if (match) {
+      const data = this.buff.slice(0, match.index);
+      this.buff = this.buff.slice(match.index + end);
+      if (handler && this[handler]) {
+        if (data.length) this[handler](data);
+      }
+      this.special = false;
+      return this.handle()
+    }
+    if (this.buff.length > CHUNK) {
+      const data = this.buff.slice(0, CHUNK);
+      this.buff = this.buff.slice(CHUNK);
+      if (handler && this[handler]) this[handler](data);
+    }
+  }
+}
+
+/* c8 ignore next */
+function nothing () {}
+
+Parser.prototype.onText = nothing;
+Parser.prototype.onTag = nothing;
+
+const rgx = /^(\/?)(\S+)|(\S+)\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))|(\/)\s*$/g;
+/*           <---tag---> <--------------attr---------------------> <------>
+ *                       <--->       <-------------------------->   selfClose
+ *                      name             <-dq-->   <-sq-->  <--->
+ *                                                           nq
+ */
+
+function parseTag (s) {
+  if (s.startsWith('!') || s.startsWith('?')) return { text: s }
+  const out = { type: '' };
+  rgx.lastIndex = undefined;
+  while (true) {
+    const m = rgx.exec(s);
+    if (!m) return out
+    const [, close, type, name, dq, sq, nq, selfClose] = m;
+    if (type) {
+      out.type = type;
+      if (close) {
+        out.close = true;
+      } else {
+        out.attrs = {};
+      }
+    } else if (name) {
+      out.attrs[name] = dq || sq || nq;
+    } else if (selfClose) {
+      out.selfClose = true;
+    }
+  }
+}
+
+class Scrapie {
+  constructor () {
+    this.path = [];
+    this._parser = parseDoc({
+      onTag: s => this._onTag(s),
+      onText: s => this._onText(s)
+    });
+    this.write = this._parser.write.bind(this._parser);
+    this.close = this._parser.close.bind(this._parser);
+    this._hooks = new Set();
+  }
+
+  get depth () {
+    return this.path.length
+  }
+
+  _onTag (string) {
+    const tag = parseTag(string);
+    const { type, close, selfClose } = tag;
+    if (!type) {
+      if (this.onSpecial) this.onSpecial(string);
+      return
+    }
+
+    if (!close) {
+      this.path.push(type);
+      this._callHooks({ tag });
+      if (selfClose) this.path.pop();
+    } else {
+      while (this.depth && this.path[this.depth - 1] !== type) {
+        this.path.pop();
+      }
+      this.path.pop();
+      this._callHooks({ tag });
+    }
+  }
+
+  _onText (text) {
+    this._callHooks({ text });
+  }
+
+  _callHooks (data) {
+    for (const hook of [...this._hooks]) {
+      if (hook.fn(data, hook.ctx) === false) this._hooks.delete(hook);
+    }
+  }
+
+  hook (fn, ctx) {
+    this._hooks.add({ fn, ctx });
+  }
+
+  whenTag (when, fn) {
+    this.hook(({ tag }, depth) => {
+      if (this.depth < depth) return false
+      if (!tag || tag.close) return
+      if (!when(tag)) return
+      return fn(tag)
+    }, this.depth);
+  }
+
+  onText (fn) {
+    this.hook(({ text }, depth) => {
+      if (this.depth < depth) return false
+      if (!text) return
+      return fn(text)
+    }, this.depth);
+  }
+}
+
+const USER_AGENT =
+  'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36';
+
+function get (url) {
+  return new Promise((resolve, reject) => {
+    const req = get$1(url, { headers: { 'User-Agent': USER_AGENT } }, res => {
+      const { statusCode } = res;
+      if (statusCode >= 400) {
+        const { statusMessage, headers } = res;
+        return reject(
+          Object.assign(new Error(res.statusMessage), {
+            statusMessage,
+            statusCode,
+            headers,
+            url
+          })
+        )
+      }
+      resolve(res);
+    });
+    req.on('error', reject);
+  })
+}
+
 const debug$4 = log
   .prefix('lse:')
   .colour()
   .level(3);
-
-const USER_AGENT =
-  'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36';
 
 function fetchIndex (indexName) {
   // ftse-all-share
@@ -1328,72 +1537,106 @@ function fetchSector (sectorName) {
   return fetchCollection(url, 'sp-sectors__table', `lse:sector:${sectorName}`)
 }
 
-async function * fetchCollection (url, collClass, source) {
-  await sleep(1000);
+async function * fetchCollection (url, collClass, priceSource) {
+  await sleep(500);
 
-  const now = new Date();
-  const fetchOpts = {
-    headers: {
-      'User-Agent': USER_AGENT
-    }
-  };
-  const { data: html } = await get(url, fetchOpts);
-  const $ = cheerio.load(html);
-  const items = $(`table.${collClass} tr`)
-    .has('td')
-    .map((i, tr) => {
-      const values = $('td', tr)
-        .map((j, td) => $(td).text())
-        .toArray();
-      const { name, ticker } = extractNameAndTicker(values[0]);
-      const price = extractNumber(values[1]);
-      return {
-        ticker,
-        name,
-        price,
-        priceUpdated: now,
-        priceSource: source
-      }
-    })
-    .toArray();
-  debug$4('Read %d items from %s', items.length, source);
-  yield * items;
+  const items = [];
+  let count = 0;
+  const priceUpdated = new Date();
+
+  const scrapie = new Scrapie();
+  scrapie.whenTag(whenTable, handleTable);
+
+  const source = await get(url);
+  source.setEncoding('utf8');
+
+  for await (const chunk of source) {
+    scrapie.write(chunk);
+    count += items.length;
+    yield * items.splice(0);
+  }
+
+  debug$4('Read %d items from %s', count, priceSource);
+
+  function whenTable ({ type, attrs }) {
+    return type === 'table' && attrs.class.includes(collClass)
+  }
+
+  function handleTable () {
+    scrapie.whenTag(tagIs('tr'), handleRow);
+  }
+
+  function tagIs (x) {
+    return ({ type }) => type === x
+  }
+
+  function handleRow () {
+    const data = [];
+    scrapie.whenTag(tagIs('td'), () =>
+      scrapie.onText(text => {
+        if (data.push(text) === 2) {
+          const { name, ticker } = extractNameAndTicker(data[0]);
+          const price = extractNumber(data[1]);
+          items.push({ ticker, name, price, priceUpdated, priceSource });
+          return false
+        }
+      })
+    );
+  }
 }
 
 async function fetchPrice (ticker) {
-  await sleep(1000);
+  await sleep(500);
 
   const url = [
     'https://www.lse.co.uk/SharePrice.asp',
     `?shareprice=${ticker.padEnd('.', 3)}`
   ].join('');
 
-  const now = new Date();
-  const fetchOpts = {
-    headers: {
-      'User-Agent': USER_AGENT
-    }
-  };
-  const { data: html } = await get(url, fetchOpts);
-  const $ = cheerio.load(html);
-
   const item = {
     ticker,
-    name: $('h1.title__title')
-      .text()
-      .replace(/ Share Price.*/, ''),
-    price: extractNumber(
-      $('span[data-field="BID"]')
-        .first()
-        .text()
-    ),
-    priceUpdated: now,
+    name: '',
+    price: null,
+    priceUpdated: new Date(),
     priceSource: 'lse:share'
   };
+
+  const scrapie = new Scrapie();
+  scrapie.whenTag(whenTitle, handleTitle);
+  scrapie.whenTag(whenBid, handleBid);
+
+  const source = await get(url);
+  source.setEncoding('utf8');
+
+  for await (const chunk of source) {
+    scrapie.write(chunk);
+  }
 
   debug$4('fetched %s from lse:share', ticker);
 
   return item
+
+  function whenTitle ({ type, attrs }) {
+    return type === 'h1' && attrs.class.includes('title__title')
+  }
+
+  function handleTitle () {
+    scrapie.onText(txt => {
+      item.name = txt.replace(/ Share Price.*/, '');
+      return false
+    });
+  }
+
+  function whenBid ({ type, attrs }) {
+    return type === 'span' && attrs['data-field'] === 'BID'
+  }
+
+  function handleBid () {
+    scrapie.onText(txt => {
+      item.price = extractNumber(txt);
+      return false
+    });
+  }
 }
 
 function extractNameAndTicker (text) {
