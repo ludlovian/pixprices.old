@@ -34,7 +34,28 @@ async function * fetchCollection (url, collClass, priceSource) {
   const priceUpdated = new Date()
 
   const scrapie = new Scrapie()
-  scrapie.whenTag(whenTable, handleTable)
+  scrapie.whenTag(
+    ({ type, attrs }) => type === 'table' && attrs.class.includes(collClass),
+    () =>
+      scrapie.whenTag(
+        ({ type }) => type === 'tr',
+        () => {
+          const data = []
+          scrapie.whenTag(
+            ({ type }) => type === 'td',
+            () =>
+              scrapie.onText(text => {
+                if (data.push(text) === 2) {
+                  const { name, ticker } = extractNameAndTicker(data[0])
+                  const price = extractNumber(data[1])
+                  items.push({ ticker, name, price, priceUpdated, priceSource })
+                  return false
+                }
+              })
+          )
+        }
+      )
+  )
 
   const source = await get(url)
   source.setEncoding('utf8')
@@ -46,32 +67,6 @@ async function * fetchCollection (url, collClass, priceSource) {
   }
 
   debug('Read %d items from %s', count, priceSource)
-
-  function whenTable ({ type, attrs }) {
-    return type === 'table' && attrs.class.includes(collClass)
-  }
-
-  function handleTable () {
-    scrapie.whenTag(tagIs('tr'), handleRow)
-  }
-
-  function tagIs (x) {
-    return ({ type }) => type === x
-  }
-
-  function handleRow () {
-    const data = []
-    scrapie.whenTag(tagIs('td'), () =>
-      scrapie.onText(text => {
-        if (data.push(text) === 2) {
-          const { name, ticker } = extractNameAndTicker(data[0])
-          const price = extractNumber(data[1])
-          items.push({ ticker, name, price, priceUpdated, priceSource })
-          return false
-        }
-      })
-    )
-  }
 }
 
 export async function fetchPrice (ticker) {
@@ -91,8 +86,24 @@ export async function fetchPrice (ticker) {
   }
 
   const scrapie = new Scrapie()
-  scrapie.whenTag(whenTitle, handleTitle)
-  scrapie.whenTag(whenBid, handleBid)
+
+  scrapie.whenTag(
+    ({ type, attrs }) => type === 'h1' && attrs.class.includes('title__title'),
+    () =>
+      scrapie.onText(txt => {
+        item.name = txt.replace(/ Share Price.*/, '')
+        return false
+      })
+  )
+
+  scrapie.whenTag(
+    ({ type, attrs }) => type === 'span' && attrs['data-field'] === 'BID',
+    () =>
+      scrapie.onText(txt => {
+        item.price = extractNumber(txt)
+        return false
+      })
+  )
 
   const source = await get(url)
   source.setEncoding('utf8')
@@ -104,28 +115,6 @@ export async function fetchPrice (ticker) {
   debug('fetched %s from lse:share', ticker)
 
   return item
-
-  function whenTitle ({ type, attrs }) {
-    return type === 'h1' && attrs.class.includes('title__title')
-  }
-
-  function handleTitle () {
-    scrapie.onText(txt => {
-      item.name = txt.replace(/ Share Price.*/, '')
-      return false
-    })
-  }
-
-  function whenBid ({ type, attrs }) {
-    return type === 'span' && attrs['data-field'] === 'BID'
-  }
-
-  function handleBid () {
-    scrapie.onText(txt => {
-      item.price = extractNumber(txt)
-      return false
-    })
-  }
 }
 
 function extractNameAndTicker (text) {
