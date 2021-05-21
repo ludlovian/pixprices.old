@@ -1454,8 +1454,8 @@ class Scrapie {
       while (this.depth && this.path[this.depth - 1] !== type) {
         this.path.pop();
       }
-      this.path.pop();
       this._callHooks({ tag });
+      this.path.pop();
     }
   }
 
@@ -1474,55 +1474,63 @@ class Scrapie {
   }
 
   when (fn) {
-    const h = new Hook(this);
+    const h = new Hook(this, fn);
     this._hooks.add(h);
-    return h.when(fn)
-  }
-
-  onText (fn) {
-    this.hook(({ text }, depth) => {
-      if (this.depth < depth) return false
-      if (!text) return
-      return fn(text)
-    }, this.depth);
+    return h
   }
 }
 
 class Hook {
-  constructor (scrapie) {
+  constructor (scrapie, fn) {
     this.scrapie = scrapie;
     this.depth = scrapie.depth;
-  }
-
-  when (fn) {
     if (typeof fn === 'string') {
       const t = fn;
       fn = ({ type }) => type === t;
     }
-    this.whenFn = fn;
+    this.fnWhen = fn;
     return this
   }
 
-  do (fn) {
-    this.doFn = fn;
+  onTag (fn) {
+    this.fnTag = fn;
     return this
   }
 
   atEnd (fn) {
-    this.endFn = fn;
+    this.fnEnd = fn;
+    return this
+  }
+
+  onText (fn) {
+    this.fnText = fn;
     return this
   }
 
   fn ({ tag }) {
-    if (this.scrapie.depth < this.depth) return this._onEnd()
+    if (this.scrapie.depth < this.depth) return false
     if (!tag || tag.close) return undefined
-    if (!this.whenFn(tag)) return undefined
-    if (this.doFn && this.doFn(tag) === false) return this._onEnd()
-  }
+    if (!this.fnWhen(tag)) return undefined
+    const ctx = {};
+    if (this.fnTag && this.fnTag(tag, ctx) === false) return false
+    if (this.fnEnd) {
+      this.scrapie.hook(({ tag }, depth) => {
+        if (!tag) return
+        const currDepth = this.scrapie.depth;
+        if (currDepth < depth) return false
+        if (currDepth > depth) return undefined
+        if (tag.close) this.fnEnd(ctx);
+        return false
+      }, this.scrapie.depth);
+    }
 
-  _onEnd () {
-    if (this.endFn) this.endFn();
-    return false
+    if (this.fnText) {
+      this.scrapie.hook(({ text }, depth) => {
+        if (!text) return
+        if (this.scrapie.depth < depth) return false
+        return this.fnText(text, ctx)
+      }, this.scrapie.depth);
+    }
   }
 }
 
@@ -1586,20 +1594,20 @@ async function * fetchCollection (url, collClass, priceSource) {
   };
 
   const scrapie = new Scrapie();
-  scrapie.when('table').do(({ attrs }) => {
+  scrapie.when('table').onTag(({ attrs }) => {
     if (!attrs.class.includes(collClass)) return
-    scrapie.when('tr').do(() => {
-      const data = [];
-      scrapie
-        .when('td')
-        .do(() => {
-          if (data.length >= 2) return false
-          scrapie.onText(t => data.push(t));
-        })
-        .atEnd(() => {
-          if (data.length >= 2) addItem(data);
-        });
-    });
+    scrapie
+      .when('tr')
+      .onTag((tag, ctx) => {
+        ctx.data = [];
+      })
+      .onText((text, ctx) => {
+        if (!scrapie.path.includes('td')) return undefined
+        if (ctx.data.push(text) === 2) return false
+      })
+      .atEnd(ctx => {
+        if (ctx.data.length === 2) addItem(ctx.data);
+      });
   });
 
   const source = await get(url);
@@ -1632,20 +1640,19 @@ async function fetchPrice (ticker) {
 
   const scrapie = new Scrapie();
 
-  scrapie.when('h1').do(({ attrs }) => {
-    if (!attrs.class.includes('title__title')) return
-    scrapie.onText(t => {
-      item.name = t.replace(/ Share Price.*/, '');
-      return false
-    });
+  const whenTitle = ({ type, attrs }) =>
+    type === 'h1' && attrs.class.includes('title__title');
+  const whenBid = ({ type, attrs }) =>
+    type === 'span' && attrs['data-field'] === 'BID';
+
+  scrapie.when(whenTitle).onText(t => {
+    item.name = t.replace(/ Share Price.*/, '');
+    return false
   });
 
-  scrapie.when('span').do(({ attrs }) => {
-    if (attrs['data-field'] !== 'BID') return
-    scrapie.onText(t => {
-      item.price = extractNumber(t);
-      return false
-    });
+  scrapie.when(whenBid).onText(t => {
+    item.price = extractNumber(t);
+    return false
   });
 
   const source = await get(url);

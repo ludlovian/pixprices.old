@@ -40,20 +40,20 @@ async function * fetchCollection (url, collClass, priceSource) {
   }
 
   const scrapie = new Scrapie()
-  scrapie.when('table').do(({ attrs }) => {
+  scrapie.when('table').onTag(({ attrs }) => {
     if (!attrs.class.includes(collClass)) return
-    scrapie.when('tr').do(() => {
-      const data = []
-      scrapie
-        .when('td')
-        .do(() => {
-          if (data.length >= 2) return false
-          scrapie.onText(t => data.push(t))
-        })
-        .atEnd(() => {
-          if (data.length >= 2) addItem(data)
-        })
-    })
+    scrapie
+      .when('tr')
+      .onTag((tag, ctx) => {
+        ctx.data = []
+      })
+      .onText((text, ctx) => {
+        if (!scrapie.path.includes('td')) return undefined
+        if (ctx.data.push(text) === 2) return false
+      })
+      .atEnd(ctx => {
+        if (ctx.data.length === 2) addItem(ctx.data)
+      })
   })
 
   const source = await get(url)
@@ -86,20 +86,19 @@ export async function fetchPrice (ticker) {
 
   const scrapie = new Scrapie()
 
-  scrapie.when('h1').do(({ attrs }) => {
-    if (!attrs.class.includes('title__title')) return
-    scrapie.onText(t => {
-      item.name = t.replace(/ Share Price.*/, '')
-      return false
-    })
+  const whenTitle = ({ type, attrs }) =>
+    type === 'h1' && attrs.class.includes('title__title')
+  const whenBid = ({ type, attrs }) =>
+    type === 'span' && attrs['data-field'] === 'BID'
+
+  scrapie.when(whenTitle).onText(t => {
+    item.name = t.replace(/ Share Price.*/, '')
+    return false
   })
 
-  scrapie.when('span').do(({ attrs }) => {
-    if (attrs['data-field'] !== 'BID') return
-    scrapie.onText(t => {
-      item.price = extractNumber(t)
-      return false
-    })
+  scrapie.when(whenBid).onText(t => {
+    item.price = extractNumber(t)
+    return false
   })
 
   const source = await get(url)
