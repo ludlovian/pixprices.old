@@ -29,33 +29,32 @@ export function fetchSector (sectorName) {
 async function * fetchCollection (url, collClass, priceSource) {
   await sleep(500)
 
-  const items = []
-  let count = 0
   const priceUpdated = new Date()
+  let count = 0
+  const items = []
+  const addItem = data => {
+    const { name, ticker } = extractNameAndTicker(data[0])
+    const price = extractNumber(data[1])
+    items.push({ ticker, name, price, priceUpdated, priceSource })
+    count++
+  }
 
   const scrapie = new Scrapie()
-  scrapie.whenTag(
-    ({ type, attrs }) => type === 'table' && attrs.class.includes(collClass),
-    () =>
-      scrapie.whenTag(
-        ({ type }) => type === 'tr',
-        () => {
-          const data = []
-          scrapie.whenTag(
-            ({ type }) => type === 'td',
-            () =>
-              scrapie.onText(text => {
-                if (data.push(text) === 2) {
-                  const { name, ticker } = extractNameAndTicker(data[0])
-                  const price = extractNumber(data[1])
-                  items.push({ ticker, name, price, priceUpdated, priceSource })
-                  return false
-                }
-              })
-          )
-        }
-      )
-  )
+  scrapie.when('table').do(({ attrs }) => {
+    if (!attrs.class.includes(collClass)) return
+    scrapie.when('tr').do(() => {
+      const data = []
+      scrapie
+        .when('td')
+        .do(() => {
+          if (data.length >= 2) return false
+          scrapie.onText(t => data.push(t))
+        })
+        .atEnd(() => {
+          if (data.length >= 2) addItem(data)
+        })
+    })
+  })
 
   const source = await get(url)
   source.setEncoding('utf8')
@@ -87,23 +86,21 @@ export async function fetchPrice (ticker) {
 
   const scrapie = new Scrapie()
 
-  scrapie.whenTag(
-    ({ type, attrs }) => type === 'h1' && attrs.class.includes('title__title'),
-    () =>
-      scrapie.onText(txt => {
-        item.name = txt.replace(/ Share Price.*/, '')
-        return false
-      })
-  )
+  scrapie.when('h1').do(({ attrs }) => {
+    if (!attrs.class.includes('title__title')) return
+    scrapie.onText(t => {
+      item.name = t.replace(/ Share Price.*/, '')
+      return false
+    })
+  })
 
-  scrapie.whenTag(
-    ({ type, attrs }) => type === 'span' && attrs['data-field'] === 'BID',
-    () =>
-      scrapie.onText(txt => {
-        item.price = extractNumber(txt)
-        return false
-      })
-  )
+  scrapie.when('span').do(({ attrs }) => {
+    if (attrs['data-field'] !== 'BID') return
+    scrapie.onText(t => {
+      item.price = extractNumber(t)
+      return false
+    })
+  })
 
   const source = await get(url)
   source.setEncoding('utf8')
