@@ -61,7 +61,6 @@ async function * fetchCollection (url, collClass, priceSource) {
 
   for await (const chunk of source) {
     scrapie.write(chunk)
-    count += items.length
     yield * items.splice(0)
   }
 
