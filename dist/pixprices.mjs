@@ -1615,7 +1615,6 @@ async function * fetchCollection (url, collClass, priceSource) {
 
   for await (const chunk of source) {
     scrapie.write(chunk);
-    count += items.length;
     yield * items.splice(0);
   }
 
@@ -1761,11 +1760,11 @@ function makePositionRow ({ position: p, stock: s }) {
     p.who,
     p.account,
     p.qty,
-    s.price || '',
-    s.dividend || '',
-    s.dividend && s.price ? s.dividend / s.price : '',
-    Math.round(p.qty * s.price) / 100 || '',
-    s.dividend ? Math.round(p.qty * s.dividend) / 100 : ''
+    s.price || 0,
+    s.dividend || 0,
+    s.dividend && s.price ? s.dividend / s.price : 0,
+    Math.round(p.qty * s.price) / 100 || 0,
+    s.dividend ? Math.round(p.qty * s.dividend) / 100 : 0
   ]
 }
 
@@ -1797,9 +1796,9 @@ function makeTradeRow ({ who, account, ticker, date, qty, cost, gain }) {
     account,
     ticker,
     date,
-    qty || '',
-    cost ? cost / 100 : '',
-    gain ? gain / 100 : ''
+    qty || 0,
+    cost ? cost / 100 : 0,
+    gain ? gain / 100 : 0
   ]
 }
 
@@ -2025,7 +2024,7 @@ async function exportStocks ({ stocks }) {
 
 function stockToRow (row) {
   const { ticker, incomeType, name, price, dividend, notes } = row;
-  return [ticker, incomeType, name, price, dividend, notes]
+  return [ticker, incomeType, name, price, dividend || 0, notes]
 }
 
 function makeCSV (arr) {
