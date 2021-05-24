@@ -40,10 +40,10 @@ function makePositionRow ({ position: p, stock: s }) {
     p.who,
     p.account,
     p.qty,
-    s.price || '',
-    s.dividend || '',
-    s.dividend && s.price ? s.dividend / s.price : '',
-    Math.round(p.qty * s.price) / 100 || '',
-    s.dividend ? Math.round(p.qty * s.dividend) / 100 : ''
+    s.price || 0,
+    s.dividend || 0,
+    s.dividend && s.price ? s.dividend / s.price : 0,
+    Math.round(p.qty * s.price) / 100 || 0,
+    s.dividend ? Math.round(p.qty * s.dividend) / 100 : 0
   ]
 }

@@ -31,8 +31,8 @@ function makeTradeRow ({ who, account, ticker, date, qty, cost, gain }) {
     account,
     ticker,
     date,
-    qty || '',
-    cost ? cost / 100 : '',
-    gain ? gain / 100 : ''
+    qty || 0,
+    cost ? cost / 100 : 0,
+    gain ? gain / 100 : 0
   ]
 }
