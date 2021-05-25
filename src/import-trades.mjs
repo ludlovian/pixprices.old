@@ -99,7 +99,7 @@ function buildPosition () {
     } else if (qty && cost && qty < 0) {
       const prev = { ...pos }
       const proceeds = -cost
-      pos.qty += trade.qty
+      pos.qty += qty
       const remain = prev.qty ? pos.qty / prev.qty : 0
       pos.cost = Math.round(remain * prev.cost)
       trade.cost = pos.cost - prev.cost

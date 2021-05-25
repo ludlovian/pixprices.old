@@ -27,8 +27,7 @@
     "sade": "^1.7.4",
     "scrapie": "github:ludlovian/scrapie",
     "sortby": "github:ludlovian/sortby#semver:^1.0.0",
-    "teme": "github:ludlovian/teme#semver:^2.0.0",
-    "terser": "^5.7.0"
+    "teme": "github:ludlovian/teme#semver:^2.0.0"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^11.2.1",

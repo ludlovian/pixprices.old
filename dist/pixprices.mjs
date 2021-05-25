@@ -57,84 +57,6 @@ function clone (o) {
   }, {})
 }
 
-function SyncEvent () {
-  const queue = [];
-  let isSet = false;
-  return {
-    async wait () {
-      if (!isSet) return new Promise(resolve => queue.push(resolve))
-      isSet = false;
-    },
-
-    set () {
-      if (!isSet && queue.length) return queue.shift()()
-      isSet = true;
-    },
-
-    get isSet () {
-      return isSet
-    }
-  }
-}
-
-function Pipe (length = 100) {
-  const queue = [];
-  const hasData = new SyncEvent();
-  const hasRoom = new SyncEvent();
-  hasRoom.set();
-
-  const reader = (async function * () {
-    while (true) {
-      await hasData.wait();
-      const { value, done, error } = queue.shift();
-      if (error) throw error
-      if (done) return
-      setEvents();
-      yield value;
-    }
-  })();
-
-  const writer = {
-    async write (value) {
-      if (writer.closed) throw new PipeClosed()
-      await _write({ value });
-    },
-
-    async throw (error) {
-      if (writer.closed) throw new PipeClosed()
-      writer.closed = true;
-      await _write({ error });
-    },
-
-    async close () {
-      if (writer.closed) return
-      writer.closed = true;
-      await _write({ done: true });
-    }
-  };
-
-  async function _write (item) {
-    await hasRoom.wait();
-    queue.push(item);
-    setEvents();
-  }
-
-  function setEvents () {
-    if (queue.length && !hasData.isSet) hasData.set();
-    if (queue.length < length && !hasRoom.isSet) hasRoom.set();
-  }
-
-  return [reader, writer]
-}
-
-class PipeClosed extends Error {
-  constructor () {
-    super('Pipe closed');
-  }
-}
-
-Pipe.PipeClosed = PipeClosed;
-
 const has = Object.prototype.hasOwnProperty;
 
 function equal (a, b) {
@@ -165,30 +87,50 @@ const AITER = Symbol.asyncIterator;
 const SITER = Symbol.iterator;
 /* c8 ignore next */
 const EMPTY = () => {};
-function returnThis () {
-  return this
-}
 
 class Teme {
-  static from (src) {
-    if (src instanceof Teme) return src
+  static fromIterable (iterable) {
+    return Teme.fromIterator(iterable[AITER]())
+  }
+
+  static fromIterator (iter) {
     const t = new Teme();
-    const it = src[AITER]();
-    async function next () {
-      const item = await it.next();
-      Object.assign(this, item);
-      return item
-    }
-    Object.defineProperties(t, {
-      [AITER]: { value: returnThis, configurable: true },
-      next: { value: next, configurable: true }
-    });
+    t._next = iter.next.bind(iter);
+    t[AITER] = t._iterator.bind(t);
     return t
   }
 
-  constructor (src) {
-    this.done = undefined;
-    this.value = undefined;
+  constructor () {
+    this._current = {};
+  }
+
+  _iterator () {
+    let curr = this._current;
+    return {
+      next: async () => {
+        if (!curr.next) curr.next = this._read();
+        curr = await curr.next;
+        return { value: curr.value, done: curr.done }
+      }
+    }
+  }
+
+  async _read () {
+    try {
+      const next = await this._next();
+      if (next.done) next.next = Promise.resolve(next);
+      return (this._current = next)
+    } catch (error) {
+      const next = { done: true };
+      next.next = this._current.next = Promise.resolve(next);
+      this._current = next;
+      throw error
+    }
+  }
+
+  get current () {
+    const { value, done } = this._current;
+    return { value, done }
   }
 
   get isSync () {
@@ -203,20 +145,32 @@ class Teme {
     return this
   }
 
+  copy () {
+    return Teme.fromIterator(this[AITER]())
+  }
+
   map (fn, ctx) {
-    return Teme.from(gen(this))
-    async function * gen (src) {
-      for await (const v of src) yield await fn(v, ctx);
-    }
+    const it = this[AITER]();
+    return Teme.fromIterator({
+      async next () {
+        const { value, done } = await it.next();
+        if (done) return { done }
+        return { value: await fn(value, ctx) }
+      }
+    })
   }
 
   filter (fn) {
-    return Teme.from(gen(this))
-    async function * gen (src) {
-      for await (const v of src) {
-        if (fn(v)) yield v;
+    const it = this[AITER]();
+    return Teme.fromIterator({
+      async next () {
+        while (true) {
+          const { value, done } = await it.next();
+          if (done) return { done }
+          if (await fn(value)) return { value }
+        }
       }
-    }
+    })
   }
 
   async collect () {
@@ -226,16 +180,22 @@ class Teme {
   }
 
   sort (fn) {
-    return Teme.from(gen(this))
-    async function * gen (src) {
-      const arr = await src.collect();
-      yield * arr.sort(fn);
-    }
+    let it;
+    const c = this.copy();
+    return Teme.fromIterator({
+      async next () {
+        if (!it) {
+          const arr = await c.collect();
+          it = arr.sort(fn)[SITER]();
+        }
+        return it.next()
+      }
+    })
   }
 
-  each (fn) {
+  each (fn, ctx) {
     return this.map(async v => {
-      await fn(v);
+      await fn(v, ctx);
       return v
     })
   }
@@ -248,34 +208,38 @@ class Teme {
   }
 
   group (fn) {
-    return Teme.from(gen(this))
-    async function * gen (src) {
-      let tgt = EMPTY;
-      let key = EMPTY;
-      let item = {};
-      while (!item.done) {
-        while (equal(key, tgt)) {
-          item = await src.next();
-          if (item.done) return
-          key = fn(item.value);
-        }
-        tgt = key;
-        yield [key, Teme.from(grouper())];
+    const it = this[AITER]();
+    let tgt = EMPTY;
+    let key = EMPTY;
+    let item = {};
+
+    return Teme.fromIterator({ next })
+
+    async function next () {
+      if (item.done) return item
+      while (equal(key, tgt)) {
+        item = await it.next();
+        if (item.done) return item
+        key = fn(item.value);
       }
-      async function * grouper () {
-        while (equal(key, tgt)) {
-          yield item.value;
-          item = await src.next();
-          if (item.done) return
-          key = fn(item.value);
-        }
-      }
+      tgt = key;
+      const grouper = Teme.fromIterator({ next: gnext });
+      const value = [key, grouper];
+      return { value }
+    }
+
+    async function gnext () {
+      if (!equal(key, tgt)) return { done: true }
+      const _item = item;
+      item = await it.next();
+      if (!item.done) key = fn(item.value);
+      return _item
     }
   }
 
   batch (size) {
     let n = 0;
-    const addCtx = value => ({ value, seq: (n++ / size) | 0 });
+    const addCtx = value => ({ value, seq: Math.floor(n++ / size) });
     const remCtx = ({ value }) => value;
     const seqKey = ({ seq }) => seq;
     const pullGroup = ([, group]) => group.map(remCtx);
@@ -293,42 +257,51 @@ class Teme {
     })
   }
 
-  async consume () {
-    while (true) {
-      const { done } = await this.next();
-      if (done) return
-    }
+  consume () {
+    return this.on(() => undefined)
   }
 
-  tee (fn, size) {
-    const [reader, writer] = new Pipe(size);
-    fn(Teme.from(reader));
-    async function * gen (src) {
-      for await (const v of src) {
-        await writer.write(v);
-        yield v;
-      }
-      await writer.close();
+  async on (fn, ctx) {
+    for await (const v of this) {
+      await fn(v, ctx);
     }
-    return Teme.from(gen(this))
   }
 }
 
 class TemeSync extends Teme {
-  static from (src) {
-    if (src instanceof Teme) return src
+  static fromIterable (iterable) {
+    return TemeSync.fromIterator(iterable[SITER]())
+  }
+
+  static fromIterator (iter) {
     const t = new TemeSync();
-    const it = src[SITER]();
-    function next () {
-      const item = it.next();
-      Object.assign(this, item);
-      return item
-    }
-    Object.defineProperties(t, {
-      [SITER]: { value: returnThis, configurable: true },
-      next: { value: next, configurable: true }
-    });
+    t._next = iter.next.bind(iter);
+    t[SITER] = t._iterator.bind(t);
     return t
+  }
+
+  _iterator () {
+    let curr = this._current;
+    return {
+      next: () => {
+        if (!curr.next) curr.next = this._read();
+        curr = curr.next;
+        return { value: curr.value, done: curr.done }
+      }
+    }
+  }
+
+  _read () {
+    try {
+      const next = this._next();
+      if (next.done) next.next = next;
+      return (this._current = next)
+    } catch (error) {
+      const next = { done: true };
+      next.next = this._current.next = next;
+      this._current = next;
+      throw error
+    }
   }
 
   get isSync () {
@@ -336,26 +309,38 @@ class TemeSync extends Teme {
   }
 
   toAsync () {
-    return Teme.from(gen(this))
-    async function * gen (src) {
-      yield * src;
-    }
+    const it = this[SITER]();
+    return Teme.fromIterator({
+      next: () => Promise.resolve(it.next())
+    })
+  }
+
+  copy () {
+    return TemeSync.fromIterator(this[SITER]())
   }
 
   map (fn, ctx) {
-    return TemeSync.from(gen(this))
-    function * gen (src) {
-      for (const v of src) yield fn(v, ctx);
-    }
+    const it = this[SITER]();
+    return TemeSync.fromIterator({
+      next () {
+        const { value, done } = it.next();
+        if (done) return { done }
+        return { value: fn(value, ctx) }
+      }
+    })
   }
 
   filter (fn) {
-    return TemeSync.from(gen(this))
-    function * gen (src) {
-      for (const v of src) {
-        if (fn(v)) yield v;
+    const it = this[SITER]();
+    return TemeSync.fromIterator({
+      next () {
+        while (true) {
+          const { value, done } = it.next();
+          if (done) return { done }
+          if (fn(value)) return { value }
+        }
       }
-    }
+    })
   }
 
   collect () {
@@ -363,12 +348,22 @@ class TemeSync extends Teme {
   }
 
   sort (fn) {
-    return TemeSync.from(this.collect().sort(fn))
+    let it;
+    const c = this.copy();
+    return TemeSync.fromIterator({
+      next () {
+        if (!it) {
+          const arr = c.collect();
+          it = arr.sort(fn)[SITER]();
+        }
+        return it.next()
+      }
+    })
   }
 
-  each (fn) {
+  each (fn, ctx) {
     return this.map(v => {
-      fn(v);
+      fn(v, ctx);
       return v
     })
   }
@@ -381,67 +376,122 @@ class TemeSync extends Teme {
   }
 
   group (fn) {
-    return TemeSync.from(gen(this))
-    function * gen (src) {
-      let tgt = EMPTY;
-      let key = EMPTY;
-      let item = {};
-      while (!item.done) {
-        while (equal(key, tgt)) {
-          item = src.next();
-          if (item.done) return
-          key = fn(item.value);
-        }
-        tgt = key;
-        yield [key, TemeSync.from(grouper())];
+    const it = this[SITER]();
+    let tgt = EMPTY;
+    let key = EMPTY;
+    let item = {};
+
+    return TemeSync.fromIterator({ next })
+
+    function next () {
+      if (item.done) return item
+      while (equal(key, tgt)) {
+        item = it.next();
+        if (item.done) return item
+        key = fn(item.value);
       }
-      function * grouper () {
-        while (equal(key, tgt)) {
-          yield item.value;
-          item = src.next();
-          if (item.done) return
-          key = fn(item.value);
-        }
-      }
+      tgt = key;
+      const grouper = TemeSync.fromIterator({ next: gnext });
+      const value = [key, grouper];
+      return { value }
+    }
+
+    function gnext () {
+      if (!equal(key, tgt)) return { done: true }
+      const _item = item;
+      item = it.next();
+      if (!item.done) key = fn(item.value);
+      return _item
     }
   }
 
-  consume () {
+  on (fn, ctx) {
+    for (const v of this) {
+      fn(v, ctx);
+    }
+  }
+}
+
+function Pipe () {
+  let head = {};
+  let tail = head;
+  return { write, end, next }
+
+  function write (value) {
+    _write({ value });
+  }
+
+  function end () {
+    _write({ done: true });
+  }
+
+  function _write (item) {
+    if (tail.done) return
+    if (tail.resolve) tail.resolve(item);
+    else tail.next = Promise.resolve(item);
+    tail = item;
+    if (tail.done) tail.next = Promise.resolve(tail);
+  }
+
+  async function next () {
+    if (!head.next) {
+      head.next = new Promise(resolve => {
+        head.resolve = resolve;
+      });
+    }
+    head = await head.next;
+    return { value: head.value, done: head.done }
+  }
+}
+
+function join (...sources) {
+  const iters = sources.map(makeIter);
+  const nexts = iters.map(makeNext);
+
+  return Teme.fromIterator({ next })
+
+  async function next () {
     while (true) {
-      const { done } = this.next();
-      if (done) return
+      if (!nexts.some(Boolean)) return { done: true }
+      const [item, ix] = await Promise.race(nexts.filter(Boolean));
+      const { done, value } = item;
+      if (done) {
+        nexts[ix] = null;
+      } else {
+        nexts[ix] = makeNext(iters[ix], ix);
+        return { value: [value, ix] }
+      }
     }
   }
 
-  tee (fn) {
-    return this.toAsync().tee(fn)
+  function makeIter (src) {
+    if (src[AITER]) return src[AITER]()
+    const it = src[SITER]();
+    return { next: async () => it.next() }
+  }
+
+  function makeNext (iter, index) {
+    return Promise.resolve(iter.next())
+      .then(item => [item, index])
+      .catch(err => {
+        nexts.splice(0);
+        throw Object.assign(err, { index })
+      })
   }
 }
 
 function teme (s) {
-  if (typeof s[SITER] === 'function') return TemeSync.from(s)
-  if (typeof s[AITER] === 'function') return Teme.from(s)
+  if (s instanceof Teme) return s
+  if (typeof s[SITER] === 'function') return TemeSync.fromIterable(s)
+  if (typeof s[AITER] === 'function') return Teme.fromIterable(s)
   throw new Error('Not iterable')
 }
 
-teme.join = function join (...sources) {
-  const [reader, writer] = new Pipe();
-  sources.forEach(feed);
-  let open = sources.length;
-  if (!open) writer.close();
-  return Teme.from(reader)
+teme.join = join;
 
-  async function feed (stream, index) {
-    try {
-      for await (const value of stream) {
-        if (writer.closed) return
-        await writer.write([value, index]);
-      }
-      if (!--open) await writer.close();
-    } catch (error) {
-      writer.throw(Object.assign(error, { index }));
-    }
-  }
+teme.pipe = function pipe () {
+  const { next, ...pipe } = new Pipe();
+  return Object.assign(Teme.fromIterator({ next }), pipe)
 };
 
 teme.isTeme = function isTeme (t) {
@@ -1261,7 +1311,7 @@ function buildPosition () {
     } else if (qty && cost && qty < 0) {
       const prev = { ...pos };
       const proceeds = -cost;
-      pos.qty += trade.qty;
+      pos.qty += qty;
       const remain = prev.qty ? pos.qty / prev.qty : 0;
       pos.cost = Math.round(remain * prev.cost);
       trade.cost = pos.cost - prev.cost;
