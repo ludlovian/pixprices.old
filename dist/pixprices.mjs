@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import sade from 'sade';
 import { format } from 'util';
-import { cyan, green, yellow, blue, magenta, red } from 'kleur/colors';
 import { get as get$1 } from 'https';
 import { stat, writeFile, unlink } from 'fs/promises';
 import { pipeline as pipeline$1 } from 'stream/promises';
@@ -57,6 +56,70 @@ function clone (o) {
   }, {})
 }
 
+const kNext$1 = Symbol('next');
+const kChain$1 = Symbol('chain');
+
+class Chain {
+  constructor (hooks = {}) {
+    this.tail = new Link(this, {});
+    Object.assign(this, hooks);
+  }
+
+  add (data, end) {
+    const newLink = new Link(this, data);
+    if (end) newLink[kNext$1] = newLink;
+    this.tail[kNext$1] = newLink;
+    return (this.tail = newLink)
+  }
+
+  atEnd () {}
+}
+
+class Link {
+  constructor (chain, data) {
+    Object.defineProperties(this, {
+      [kChain$1]: { value: chain, configurable: true },
+      [kNext$1]: { configurable: true, writable: true }
+    });
+    return Object.assign(this, data)
+  }
+
+  next () {
+    return this[kNext$1] ? this[kNext$1] : (this[kNext$1] = this[kChain$1].atEnd())
+  }
+}
+
+function Pipe () {
+  const chain = new Chain({
+    atEnd: () => new Promise(resolve => (chain.tail.resolve = resolve))
+  });
+  let curr = chain.tail;
+  return [
+    { [Symbol.asyncIterator]: () => ({ next }) },
+    {
+      write: value => write({ value }),
+      close: _ => write({ done: true }),
+      throw: error => write({ error })
+    }
+  ]
+
+  function write (item) {
+    const prev = chain.tail;
+    if (prev.done) return
+    item = chain.add(item, item.done);
+    if (prev.resolve) prev.resolve(item);
+  }
+
+  async function next () {
+    const { value, done, error } = (curr = await curr.next());
+    if (error) {
+      curr = chain.add({ done: true }, true);
+      throw error
+    }
+    return { value, done }
+  }
+}
+
 const has = Object.prototype.hasOwnProperty;
 
 function equal (a, b) {
@@ -87,6 +150,10 @@ const AITER = Symbol.asyncIterator;
 const SITER = Symbol.iterator;
 /* c8 ignore next */
 const EMPTY = () => {};
+const kIter = Symbol('iterator');
+const kChain = Symbol('chain');
+const kRead = Symbol('read');
+const kNext = Symbol('next');
 
 class Teme {
   static fromIterable (iterable) {
@@ -95,41 +162,35 @@ class Teme {
 
   static fromIterator (iter) {
     const t = new Teme();
-    t._next = iter.next.bind(iter);
-    t[AITER] = t._iterator.bind(t);
-    return t
+    return Object.defineProperties(t, {
+      [kNext]: { value: () => iter.next(), configurable: true },
+      [AITER]: { value: () => t[kIter](), configurable: true }
+    })
   }
 
   constructor () {
-    this._current = {};
+    const chain = new Chain({ atEnd: () => this[kRead]() });
+    Object.defineProperty(this, kChain, { value: chain, configurable: true });
   }
 
-  _iterator () {
-    let curr = this._current;
-    return {
-      next: async () => {
-        if (!curr.next) curr.next = this._read();
-        curr = await curr.next;
-        return { value: curr.value, done: curr.done }
-      }
-    }
+  [kIter] () {
+    let curr = this[kChain].tail;
+    return { next: async () => (curr = await curr.next()) }
   }
 
-  async _read () {
+  async [kRead] () {
+    const chain = this[kChain];
     try {
-      const next = await this._next();
-      if (next.done) next.next = Promise.resolve(next);
-      return (this._current = next)
+      const item = await this[kNext]();
+      return chain.add(item, !!item.done)
     } catch (error) {
-      const next = { done: true };
-      next.next = this._current.next = Promise.resolve(next);
-      this._current = next;
+      chain.add({ done: true }, true);
       throw error
     }
   }
 
   get current () {
-    const { value, done } = this._current;
+    const { value, done } = this[kChain].tail;
     return { value, done }
   }
 
@@ -275,31 +336,24 @@ class TemeSync extends Teme {
 
   static fromIterator (iter) {
     const t = new TemeSync();
-    t._next = iter.next.bind(iter);
-    t[SITER] = t._iterator.bind(t);
-    return t
+    return Object.defineProperties(t, {
+      [kNext]: { value: () => iter.next(), configurable: true },
+      [SITER]: { value: () => t[kIter](), configurable: true }
+    })
   }
 
-  _iterator () {
-    let curr = this._current;
-    return {
-      next: () => {
-        if (!curr.next) curr.next = this._read();
-        curr = curr.next;
-        return { value: curr.value, done: curr.done }
-      }
-    }
+  [kIter] () {
+    let curr = this[kChain].tail;
+    return { next: () => (curr = curr.next()) }
   }
 
-  _read () {
+  [kRead] () {
+    const chain = this[kChain];
     try {
-      const next = this._next();
-      if (next.done) next.next = next;
-      return (this._current = next)
+      const item = this[kNext]();
+      return chain.add(item, !!item.done)
     } catch (error) {
-      const next = { done: true };
-      next.next = this._current.next = next;
-      this._current = next;
+      chain.add({ done: true }, true);
       throw error
     }
   }
@@ -412,38 +466,6 @@ class TemeSync extends Teme {
   }
 }
 
-function Pipe () {
-  let head = {};
-  let tail = head;
-  return { write, end, next }
-
-  function write (value) {
-    _write({ value });
-  }
-
-  function end () {
-    _write({ done: true });
-  }
-
-  function _write (item) {
-    if (tail.done) return
-    if (tail.resolve) tail.resolve(item);
-    else tail.next = Promise.resolve(item);
-    tail = item;
-    if (tail.done) tail.next = Promise.resolve(tail);
-  }
-
-  async function next () {
-    if (!head.next) {
-      head.next = new Promise(resolve => {
-        head.resolve = resolve;
-      });
-    }
-    head = await head.next;
-    return { value: head.value, done: head.done }
-  }
-}
-
 function join (...sources) {
   const iters = sources.map(makeIter);
   const nexts = iters.map(makeNext);
@@ -490,23 +512,84 @@ function teme (s) {
 teme.join = join;
 
 teme.pipe = function pipe () {
-  const { next, ...pipe } = new Pipe();
-  return Object.assign(Teme.fromIterator({ next }), pipe)
+  const [reader, writer] = new Pipe();
+  return Object.assign(Teme.fromIterable(reader), writer)
 };
 
 teme.isTeme = function isTeme (t) {
   return t instanceof Teme
 };
 
-const colourFuncs = { cyan, green, yellow, blue, magenta, red };
-const colours = Object.keys(colourFuncs);
+const allColours = (
+  '20,21,26,27,32,33,38,39,40,41,42,43,44,45,56,57,62,63,68,69,74,75,76,' +
+  '77,78,79,80,81,92,93,98,99,112,113,128,129,134,135,148,149,160,161,' +
+  '162,163,164,165,166,167,168,169,170,171,172,173,178,179,184,185,196,' +
+  '197,198,199,200,201,202,203,204,205,206,207,208,209,214,215,220,221'
+)
+  .split(',')
+  .map(x => parseInt(x, 10));
+
+const painters = [];
+
+function makePainter (n) {
+  const CSI = '\x1b[';
+  const set = CSI + (n < 8 ? n + 30 + ';22' : '38;5;' + n + ';1') + 'm';
+  const reset = CSI + '39;22m';
+  return s => {
+    if (!s.includes(CSI)) return set + s + reset
+    return removeExcess(set + s.replaceAll(reset, reset + set) + reset)
+  }
+}
+
+function painter (n) {
+  if (painters[n]) return painters[n]
+  painters[n] = makePainter(n);
+  return painters[n]
+}
+
+// eslint-disable-next-line no-control-regex
+const rgxDecolour = /(^|[^\x1b]*)((?:\x1b\[[0-9;]+m)|$)/g;
+function truncate (string, max) {
+  max -= 2; // leave two chars at end
+  if (string.length <= max) return string
+  const parts = [];
+  let w = 0;
+  for (const [, txt, clr] of string.matchAll(rgxDecolour)) {
+    parts.push(txt.slice(0, max - w), clr);
+    w = Math.min(w + txt.length, max);
+  }
+  return removeExcess(parts.join(''))
+}
+
+// eslint-disable-next-line no-control-regex
+const rgxSerialColours = /(?:\x1b\[[0-9;]+m)+(\x1b\[[0-9;]+m)/g;
+function removeExcess (string) {
+  return string.replaceAll(rgxSerialColours, '$1')
+}
+
+function randomColour () {
+  const n = Math.floor(Math.random() * allColours.length);
+  return allColours[n]
+}
+
+const colours = {
+  black: 0,
+  red: 1,
+  green: 2,
+  yellow: 3,
+  blue: 4,
+  magenta: 5,
+  cyan: 6,
+  white: 7
+};
+
 const CLEAR_LINE = '\r\x1b[0K';
-const RE_DECOLOR = /(^|[^\x1b]*)((?:\x1b\[\d*m)|$)/g; // eslint-disable-line no-control-regex
 
 const state = {
   dirty: false,
   width: process.stdout && process.stdout.columns,
-  level: process.env.LOGLEVEL,
+  /* c8 ignore next */
+  level: process.env.LOGLEVEL ? parseInt(process.env.LOGLEVEL, 10) : undefined,
   write: process.stdout.write.bind(process.stdout)
 };
 
@@ -520,7 +603,7 @@ function _log (
   if (level && (!state.level || state.level < level)) return
   const msg = format(...args);
   let string = prefix + msg;
-  if (colour && colour in colourFuncs) string = colourFuncs[colour](string);
+  if (colour != null) string = painter(colour)(string);
   if (limitWidth) string = truncate(string, state.width);
   if (newline) string = string + '\n';
   if (state.dirty) string = CLEAR_LINE + string;
@@ -528,51 +611,41 @@ function _log (
   state.write(string);
 }
 
-function truncate (string, max) {
-  max -= 2; // leave two chars at end
-  if (string.length <= max) return string
-  const parts = [];
-  let w = 0
-  ;[...string.matchAll(RE_DECOLOR)].forEach(([, txt, clr]) => {
-    parts.push(txt.slice(0, max - w), clr);
-    w = Math.min(w + txt.length, max);
-  });
-  return parts.join('')
-}
+function makeLogger (base, changes = {}) {
+  const baseOptions = base ? base._preset : {};
+  const options = {
+    ...baseOptions,
+    ...changes,
+    prefix: (baseOptions.prefix || '') + (changes.prefix || '')
+  };
+  const configurable = true;
+  const fn = (...args) => _log(args, options);
+  const addLevel = level => makeLogger(fn, { level });
+  const addColour = c =>
+    makeLogger(fn, { colour: c in colours ? colours[c] : randomColour() });
+  const addPrefix = prefix => makeLogger(fn, { prefix });
+  const status = () => makeLogger(fn, { newline: false, limitWidth: true });
 
-function merge (old, new_) {
-  const prefix = (old.prefix || '') + (new_.prefix || '');
-  return { ...old, ...new_, prefix }
-}
+  const colourFuncs = Object.fromEntries(
+    Object.entries(colours).map(([name, n]) => [
+      name,
+      { value: painter(n), configurable }
+    ])
+  );
 
-function logger (options) {
-  return Object.defineProperties((...args) => _log(args, options), {
-    _preset: { value: options, configurable: true },
-    _state: { value: state, configurable: true },
-    name: { value: 'log', configurable: true }
+  return Object.defineProperties(fn, {
+    _preset: { value: options, configurable },
+    _state: { value: state, configurable },
+    name: { value: 'log', configurable },
+    level: { value: addLevel, configurable },
+    colour: { value: addColour, configurable },
+    prefix: { value: addPrefix, configurable },
+    status: { get: status, configurable },
+    ...colourFuncs
   })
 }
 
-function nextColour () {
-  const clr = colours.shift();
-  colours.push(clr);
-  return clr
-}
-
-function fixup (log) {
-  const p = log._preset;
-  Object.assign(log, {
-    status: logger(merge(p, { newline: false, limitWidth: true })),
-    level: level => fixup(logger(merge(p, { level }))),
-    colour: colour =>
-      fixup(logger(merge(p, { colour: colour || nextColour() }))),
-    prefix: prefix => fixup(logger(merge(p, { prefix }))),
-    ...colourFuncs
-  });
-  return log
-}
-
-const log = fixup(logger({}));
+const log = makeLogger();
 
 function toSerial (dt) {
   const ms = dt.getTime();
@@ -1361,100 +1434,90 @@ const rgxMain = (() => {
   const tagElement = '(?:<)' + '([^>]*)' + '(?:>)';
   return new RegExp(textElement + '|' + specialElement + '|' + tagElement, 'g')
 })();
+
 const specials = {
-  '<![CDATA[': { rgx: /]]>/, start: 9, end: 3, handler: 'onCData' },
+  '<![CDATA[': { rgx: /]]>/, start: 9, end: 3, emit: 'cdata' },
   '<!--': { rgx: /-->/, start: 4, end: 3 },
   '<script': { rgx: /<\/script>/, start: 7, end: 9 }
 };
+
 const CHUNK = 1024;
 
-function parseDoc (hooks = {}) {
-  return Object.assign(new Parser(), hooks)
-}
+const rgxTag = (() => {
+  const maybeClose = '(\\/?)';
+  const typeName = '(\\S+)';
+  const elementType = `^${maybeClose}${typeName}`;
+  const attrName = '(\\S+)';
+  const attrValueDQ = '"([^"]*)"';
+  const attrValueSQ = "'([^']*)'";
+  const attrValueNQ = '(\\S+)';
+  const attrValue = `(?:${attrValueDQ}|${attrValueSQ}|${attrValueNQ})`;
+  const attr = `${attrName}\\s*=\\s*${attrValue}`;
+  const selfClose = '(\\/)\\s*$';
+  return new RegExp(`${elementType}|${attr}|${selfClose}`, 'g')
+})();
 
 class Parser {
-  constructor () {
-    this.buff = '';
+  constructor (handler) {
+    this.buffer = '';
     this.special = false;
+    this.handler = handler;
   }
 
-  write (s) {
-    this.buff += s;
-    if (this.special) {
-      this.handleSpecial();
-    } else {
-      this.handle();
-    }
-  }
-
-  close () {
-    this.handle();
-    this.buff = '';
-  }
-
-  handle () {
-    rgxMain.lastIndex = undefined;
-    let consumed = 0;
-    while (true) {
-      const m = rgxMain.exec(this.buff);
-      if (!m) break
-      const [, text, special, tag] = m;
-      if (text) {
-        consumed = m.index + text.length;
-        this.onText(text);
-      } else if (tag) {
-        consumed = m.index + tag.length + 2;
-        this.onTag(tag);
-      } else if (special) {
-        this.special = special;
-        const { start } = specials[special];
-        consumed = m.index + start;
-        this.buff = this.buff.slice(consumed);
-        return this.handleSpecial()
-      }
-    }
-    this.buff = this.buff.slice(consumed);
-  }
-
-  handleSpecial () {
-    const { rgx, end, handler } = specials[this.special];
-    const match = rgx.exec(this.buff);
-    if (match) {
-      const data = this.buff.slice(0, match.index);
-      this.buff = this.buff.slice(match.index + end);
-      if (handler && this[handler]) {
-        if (data.length) this[handler](data);
-      }
-      this.special = false;
-      return this.handle()
-    }
-    if (this.buff.length > CHUNK) {
-      const data = this.buff.slice(0, CHUNK);
-      this.buff = this.buff.slice(CHUNK);
-      if (handler && this[handler]) this[handler](data);
-    }
+  write (text) {
+    this.buffer += text;
+    if (this.special) handleSpecial(this);
+    else handle(this);
   }
 }
 
-/* c8 ignore next */
-function nothing () {}
-
-Parser.prototype.onText = nothing;
-Parser.prototype.onTag = nothing;
-
-const rgx = /^(\/?)(\S+)|(\S+)\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))|(\/)\s*$/g;
-/*           <---tag---> <--------------attr---------------------> <------>
- *                       <--->       <-------------------------->   selfClose
- *                      name             <-dq-->   <-sq-->  <--->
- *                                                           nq
- */
-
-function parseTag (s) {
-  if (s.startsWith('!') || s.startsWith('?')) return { text: s }
-  const out = { type: '' };
-  rgx.lastIndex = undefined;
+function handle (p) {
+  rgxMain.lastIndex = undefined;
+  let consumed = 0;
   while (true) {
-    const m = rgx.exec(s);
+    const m = rgxMain.exec(p.buffer);
+    if (!m) break
+    const [, text, special, tag] = m;
+    if (text) {
+      consumed = m.index + text.length;
+      p.handler({ text });
+    } else if (tag) {
+      consumed = m.index + tag.length + 2;
+      p.handler(parseTag(tag));
+    } else if (special) {
+      p.special = special;
+      const { start } = specials[special];
+      consumed = m.index + start;
+      p.buffer = p.buffer.slice(consumed);
+      return handleSpecial(p)
+    }
+  }
+  p.buffer = p.buffer.slice(consumed);
+}
+
+function handleSpecial (p) {
+  const { rgx, end, emit } = specials[p.special];
+  const match = rgx.exec(p.buffer);
+  if (match) {
+    const data = p.buffer.slice(0, match.index);
+    p.buffer = p.buffer.slice(match.index + end);
+    if (emit && data.length) p.handler({ [emit]: data });
+    p.special = false;
+    return handle(p)
+  }
+  if (p.buffer.length > CHUNK) {
+    const data = p.buffer.slice(0, CHUNK);
+    p.buffer = p.buffer.slice(CHUNK);
+    if (emit) p.handler({ [emit]: data });
+  }
+}
+
+function parseTag (tag) {
+  if (tag.startsWith('!') || tag.startsWith('?')) return { meta: tag }
+  const out = { type: '' };
+  rgxTag.lastIndex = undefined;
+  while (true) {
+    const m = rgxTag.exec(tag);
     if (!m) return out
     const [, close, type, name, dq, sq, nq, selfClose] = m;
     if (type) {
@@ -1472,116 +1535,116 @@ function parseTag (s) {
   }
 }
 
-class Scrapie {
-  constructor () {
-    this.path = [];
-    this._parser = parseDoc({
-      onTag: s => this._onTag(s),
-      onText: s => this._onText(s)
-    });
-    this.write = this._parser.write.bind(this._parser);
-    this.close = this._parser.close.bind(this._parser);
-    this._hooks = new Set();
-  }
+function ClosingParser (handler) {
+  const parser = new Parser(ondata);
+  const path = [];
+  const write = parser.write.bind(parser);
+  let depth = 0;
 
-  get depth () {
-    return this.path.length
-  }
+  return { write, path }
 
-  _onTag (string) {
-    const tag = parseTag(string);
-    const { type, close, selfClose } = tag;
-    if (!type) {
-      if (this.onSpecial) this.onSpecial(string);
-      return
-    }
-
-    if (!close) {
-      this.path.push(type);
-      this._callHooks({ tag });
-      if (selfClose) this.path.pop();
-    } else {
-      while (this.depth && this.path[this.depth - 1] !== type) {
-        this.path.pop();
+  function ondata (data) {
+    data.depth = depth;
+    const { type, close, selfClose, ...rest } = data;
+    if (type && !close) {
+      handler({ type, ...rest });
+      if (selfClose) {
+        handler({ type, close: true, depth });
+      } else {
+        path.push(type);
+        depth++;
       }
-      this._callHooks({ tag });
-      this.path.pop();
+    } else if (type && close) {
+      while (path.length && path[path.length - 1] !== type) {
+        const type = path.pop();
+        depth--;
+        handler({ type, close: true, depth });
+      }
+      if (depth) {
+        path.pop();
+        depth--;
+      }
+      handler({ type, close, depth });
+    } else {
+      handler(data);
     }
-  }
-
-  _onText (text) {
-    this._callHooks({ text });
-  }
-
-  _callHooks (data) {
-    for (const hook of [...this._hooks]) {
-      if (hook.fn(data, hook.ctx) === false) this._hooks.delete(hook);
-    }
-  }
-
-  hook (fn, ctx) {
-    this._hooks.add({ fn, ctx });
-  }
-
-  when (fn) {
-    const h = new Hook(this, fn);
-    this._hooks.add(h);
-    return h
   }
 }
 
-class Hook {
-  constructor (scrapie, fn) {
-    this.scrapie = scrapie;
-    this.depth = scrapie.depth;
-    if (typeof fn === 'string') {
-      const t = fn;
-      fn = ({ type }) => type === t;
+class Scrapie {
+  constructor (isChild) {
+    if (!this.isChild) {
+      const parser = new ClosingParser(this._ondata.bind(this));
+      this.write = parser.write.bind(parser);
     }
-    this.fnWhen = fn;
-    return this
+    this._hooks = {};
   }
 
-  onTag (fn) {
-    this.fnTag = fn;
-    return this
-  }
-
-  atEnd (fn) {
-    this.fnEnd = fn;
-    return this
-  }
-
-  onText (fn) {
-    this.fnText = fn;
-    return this
-  }
-
-  fn ({ tag }) {
-    if (this.scrapie.depth < this.depth) return false
-    if (!tag || tag.close) return undefined
-    if (!this.fnWhen(tag)) return undefined
-    const ctx = {};
-    if (this.fnTag && this.fnTag(tag, ctx) === false) return false
-    if (this.fnEnd) {
-      this.scrapie.hook(({ tag }, depth) => {
-        if (!tag) return
-        const currDepth = this.scrapie.depth;
-        if (currDepth < depth) return false
-        if (currDepth > depth) return undefined
-        if (tag.close) this.fnEnd(ctx);
-        return false
-      }, this.scrapie.depth);
+  on (event, callback) {
+    if (event === 'text') {
+      event = 'data';
+      const cb = callback;
+      callback = ({ text }) => text && cb(text);
     }
+    const list = this._hooks[event];
+    if (list) list.push(callback);
+    else this._hooks[event] = [callback];
+    return this
+  }
 
-    if (this.fnText) {
-      this.scrapie.hook(({ text }, depth) => {
-        if (!text) return
-        if (this.scrapie.depth < depth) return false
-        return this.fnText(text, ctx)
-      }, this.scrapie.depth);
+  _emit (event, data) {
+    const list = this._hooks[event];
+    if (!list) return undefined
+    for (let i = 0; i < list.length; i++) {
+      list[i](data);
     }
   }
+
+  _ondata (data) {
+    this._emit('data', data);
+  }
+
+  when (fn) {
+    if (typeof fn === 'string') fn = makeCondition(fn);
+    return new SubScrapie(this, fn)
+  }
+}
+
+class SubScrapie extends Scrapie {
+  constructor (parent, condition) {
+    super(true);
+    parent.on('data', this._ondata.bind(this));
+    this.write = parent.write;
+    this._active = false;
+    this._condition = condition;
+  }
+
+  _ondata (data) {
+    if (this._active) {
+      if (data.depth < this._activeDepth) {
+        this._emit('exit', data);
+        this._active = false;
+      } else {
+        this._emit('data', data);
+      }
+    } else {
+      if (this._condition(data)) {
+        this._emit('enter', data);
+        this._active = true;
+        this._activeDepth = data.depth + 1;
+      }
+    }
+  }
+}
+
+function makeCondition (string) {
+  if (string.includes('.')) {
+    const [t, cls] = string.split('.');
+    return ({ type, attrs }) =>
+      type === t && attrs && attrs.class && attrs.class.includes(cls)
+  }
+  const t = string;
+  return ({ type }) => type === t
 }
 
 const USER_AGENT =
@@ -1643,22 +1706,16 @@ async function * fetchCollection (url, collClass, priceSource) {
     count++;
   };
 
+  let row;
+
   const scrapie = new Scrapie();
-  scrapie.when('table').onTag(({ attrs }) => {
-    if (!attrs.class.includes(collClass)) return
-    scrapie
-      .when('tr')
-      .onTag((tag, ctx) => {
-        ctx.data = [];
-      })
-      .onText((text, ctx) => {
-        if (!scrapie.path.includes('td')) return undefined
-        if (ctx.data.push(text) === 2) return false
-      })
-      .atEnd(ctx => {
-        if (ctx.data.length === 2) addItem(ctx.data);
-      });
-  });
+  scrapie
+    .when('table.' + collClass)
+    .when('tr')
+    .on('enter', () => (row = []))
+    .on('exit', () => row.length >= 2 && addItem(row))
+    .when('td')
+    .on('text', t => row.push(t));
 
   const source = await get(url);
   source.setEncoding('utf8');
@@ -1689,19 +1746,15 @@ async function fetchPrice (ticker) {
 
   const scrapie = new Scrapie();
 
-  const whenTitle = ({ type, attrs }) =>
-    type === 'h1' && attrs.class.includes('title__title');
   const whenBid = ({ type, attrs }) =>
-    type === 'span' && attrs['data-field'] === 'BID';
+    type === 'span' && attrs && attrs['data-field'] === 'BID';
 
-  scrapie.when(whenTitle).onText(t => {
-    item.name = t.replace(/ Share Price.*/, '');
-    return false
+  scrapie.when('h1.title__title').on('text', t => {
+    item.name = item.name || t.replace(/ Share Price.*/, '');
   });
 
-  scrapie.when(whenBid).onText(t => {
-    item.price = extractNumber(t);
-    return false
+  scrapie.when(whenBid).on('text', t => {
+    item.price = item.price || extractNumber(t);
   });
 
   const source = await get(url);
@@ -2074,7 +2127,7 @@ async function exportStocks ({ stocks }) {
 
 function stockToRow (row) {
   const { ticker, incomeType, name, price, dividend, notes } = row;
-  return [ticker, incomeType, name, price, dividend || 0, notes]
+  return [ticker, incomeType, name, price || 0, dividend || 0, notes]
 }
 
 function makeCSV (arr) {
