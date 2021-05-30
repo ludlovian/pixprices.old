@@ -7,7 +7,6 @@ export default {
     'fs/promises',
     'stream/promises',
     'sade',
-    'kleur/colors',
     'mime/lite.js',
     '@googleapis/sheets',
     '@googleapis/drive',
