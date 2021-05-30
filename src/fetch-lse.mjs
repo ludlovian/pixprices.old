@@ -39,22 +39,16 @@ async function * fetchCollection (url, collClass, priceSource) {
     count++
   }
 
+  let row
+
   const scrapie = new Scrapie()
-  scrapie.when('table').onTag(({ attrs }) => {
-    if (!attrs.class.includes(collClass)) return
-    scrapie
-      .when('tr')
-      .onTag((tag, ctx) => {
-        ctx.data = []
-      })
-      .onText((text, ctx) => {
-        if (!scrapie.path.includes('td')) return undefined
-        if (ctx.data.push(text) === 2) return false
-      })
-      .atEnd(ctx => {
-        if (ctx.data.length === 2) addItem(ctx.data)
-      })
-  })
+  scrapie
+    .when('table.' + collClass)
+    .when('tr')
+    .on('enter', () => (row = []))
+    .on('exit', () => row.length >= 2 && addItem(row))
+    .when('td')
+    .on('text', t => row.push(t))
 
   const source = await get(url)
   source.setEncoding('utf8')
@@ -85,19 +79,15 @@ export async function fetchPrice (ticker) {
 
   const scrapie = new Scrapie()
 
-  const whenTitle = ({ type, attrs }) =>
-    type === 'h1' && attrs.class.includes('title__title')
   const whenBid = ({ type, attrs }) =>
-    type === 'span' && attrs['data-field'] === 'BID'
+    type === 'span' && attrs && attrs['data-field'] === 'BID'
 
-  scrapie.when(whenTitle).onText(t => {
-    item.name = t.replace(/ Share Price.*/, '')
-    return false
+  scrapie.when('h1.title__title').on('text', t => {
+    item.name = item.name || t.replace(/ Share Price.*/, '')
   })
 
-  scrapie.when(whenBid).onText(t => {
-    item.price = extractNumber(t)
-    return false
+  scrapie.when(whenBid).on('text', t => {
+    item.price = item.price || extractNumber(t)
   })
 
   const source = await get(url)
