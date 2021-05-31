@@ -32,7 +32,7 @@ function makeTradeRow ({ who, account, ticker, date, qty, cost, gain }) {
     ticker,
     date,
     qty || 0,
-    cost ? cost / 100 : 0,
-    gain ? gain / 100 : 0
+    cost ? cost.toNumber() : 0,
+    gain ? gain.toNumber() : 0
   ]
 }

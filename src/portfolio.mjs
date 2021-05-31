@@ -2,6 +2,8 @@ import sortBy from 'sortby'
 import { Row } from 'googlejs/datastore'
 import { IndexedTable, Index, UniqueIndex } from 'googlejs/table'
 
+import currency from './currency.mjs'
+
 export default class Portfolio {
   constructor () {
     this.stocks = new Stocks()
@@ -87,4 +89,22 @@ class Trades extends IndexedTable {
   }
 }
 
-class Trade extends Row {}
+class Trade extends Row {
+  constructor (data) {
+    const { cost, gain, ...rest } = data
+    super({
+      ...rest,
+      cost: typeof cost === 'number' ? currency.import(cost, 2) : undefined,
+      gain: typeof gain === 'number' ? currency.import(gain, 2) : undefined
+    })
+  }
+
+  asJSON () {
+    const { cost, gain } = this
+    return {
+      ...this,
+      cost: cost != null ? cost.export() : cost,
+      gain: gain != null ? gain.export() : gain
+    }
+  }
+}

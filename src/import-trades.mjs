@@ -5,6 +5,7 @@ import teme from 'teme'
 import pipeline from 'pixutil/pipeline'
 
 import { getTradesSheet } from './sheets.mjs'
+import currency from './currency.mjs'
 
 const debug = log
   .prefix('import-trades:')
@@ -42,17 +43,28 @@ function rowToTrade () {
   const account = 'Dealing'
   let who
   let ticker
-  return ([who_, ticker_, date, qty, cost, notes]) => {
-    who = who_ || who
-    ticker = ticker_ || ticker
-    return { who, account, ticker, date, qty, cost, notes }
-  }
+  return ([who_, ticker_, date, qty, cost, notes]) => ({
+    who: (who = who_ || who),
+    account,
+    ticker: (ticker = ticker_ || ticker),
+    date,
+    qty: makeNumber(qty),
+    cost: makeNumber(cost),
+    notes
+  })
+}
+
+function makeNumber (x) {
+  return typeof x === 'number' ? x : !x ? undefined : x
+}
+
+function isNumber (x) {
+  return x === undefined || typeof x === 'number'
 }
 
 function validTrade ({ who, ticker, date, qty, cost }) {
   if (!who || !ticker || typeof date !== 'number') return false
-  if (qty && typeof qty !== 'number') return false
-  if (cost && typeof cost !== 'number') return false
+  if (!isNumber(qty) || !isNumber(cost)) return false
   return qty || cost
 }
 
@@ -60,7 +72,7 @@ function cleanTrade ({ date, cost, ...rest }) {
   return {
     ...rest,
     date: toDate(date),
-    cost: cost ? Math.round(cost * 100) : cost
+    cost: cost != null ? currency(cost) : cost
   }
 }
 
@@ -89,25 +101,25 @@ function addCosts (groups) {
 }
 
 function buildPosition () {
-  const pos = { qty: 0, cost: 0 }
+  const pos = { qty: 0, cost: currency(0) }
   return trade => {
     const { qty, cost } = trade
     if (qty && cost && qty > 0) {
       // buy
       pos.qty += qty
-      pos.cost += cost
+      pos.cost = pos.cost.add(cost)
     } else if (qty && cost && qty < 0) {
       const prev = { ...pos }
-      const proceeds = -cost
+      const proceeds = cost.abs()
       pos.qty += qty
       const remain = prev.qty ? pos.qty / prev.qty : 0
-      pos.cost = Math.round(remain * prev.cost)
-      trade.cost = pos.cost - prev.cost
-      trade.gain = proceeds + trade.cost
+      pos.cost = prev.cost.mul(remain)
+      trade.cost = prev.cost.sub(pos.cost).neg()
+      trade.gain = proceeds.sub(trade.cost.abs())
     } else if (qty) {
       pos.qty += qty
     } else if (cost) {
-      pos.cost += cost
+      pos.cost = pos.cost.add(cost)
     }
   }
 }

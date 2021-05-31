@@ -36,6 +36,7 @@
     "pixutil": "github:ludlovian/pixutil#semver:^1.1.0",
     "scrapie": "github:ludlovian/scrapie#semver:^2.0.0",
     "sortby": "github:ludlovian/sortby#semver:^1.0.0",
-    "teme": "github:ludlovian/teme#semver:^2.0.0"
+    "teme": "github:ludlovian/teme#semver:^2.0.0",
+    "uvu": "^0.5.1"
   }
 }

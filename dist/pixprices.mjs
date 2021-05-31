@@ -50,10 +50,7 @@ function clone (o) {
   if (!o || typeof o !== 'object') return o
   if (o instanceof Date) return new Date(o)
   if (Array.isArray(o)) return o.map(clone)
-  return Object.entries(o).reduce((o, [k, v]) => {
-    o[k] = clone(v);
-    return o
-  }, {})
+  return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, clone(v)]))
 }
 
 const kNext$1 = Symbol('next');
@@ -664,12 +661,9 @@ function toDate (serial) {
 }
 
 function clean (obj) {
-  const ret = {};
-  for (const k of Object.keys(obj).sort()) {
-    const v = obj[k];
-    if (v !== undefined) ret[k] = v;
-  }
-  return ret
+  return Object.fromEntries(
+    Object.entries(obj).filter(([, v]) => v !== undefined)
+  )
 }
 
 const debug$9 = log
@@ -699,9 +693,8 @@ class Table {
         query = query.order(...arrify(args));
       }
     }
-    const Factory = factory || Row;
     for await (const entity of query.runStream()) {
-      yield new Factory(entity, datastore);
+      yield Row.fromEntity(entity, datastore, factory);
     }
   }
 
@@ -751,21 +744,30 @@ const KEY = Symbol('rowKey');
 const PREV = Symbol('prev');
 
 class Row {
-  constructor (entity, datastore) {
-    Object.assign(this, clone(clean(entity)));
-    Object.defineProperties(this, {
+  static fromEntity (entity, datastore, Factory) {
+    const data = clone(entity);
+    const row = new (Factory || Row)(data);
+    Object.defineProperties(row, {
       [KEY]: { value: entity[datastore.KEY], configurable: true },
-      [PREV]: { value: clone(entity), configurable: true }
+      [PREV]: { value: clone(data), configurable: true }
     });
+    return row
+  }
+
+  constructor (data) {
+    Object.assign(this, clean(data));
+  }
+
+  asJSON () {
+    return { ...this }
+  }
+
+  _changed () {
+    return !equal(clean(this.asJSON()), this[PREV])
   }
 
   get _key () {
     return this[KEY]
-  }
-
-  _changed () {
-    // unwrap from class and clean before comparing
-    return !equal(clean(this), this[PREV])
   }
 }
 
@@ -783,10 +785,11 @@ const getDatastoreAPI = once(async function getDatastoreAPI ({
 
 function getEntities (arr, { kind, datastore, size = 400 }) {
   return teme(arrify(arr))
-    .filter(row => !(row instanceof Row) || row._changed())
+    .map(row => (row instanceof Row) ? row : new Row(row))
+    .filter(row => row._changed())
     .map(row => ({
       key: row._key || datastore.key([kind]),
-      data: clone(row)
+      data: clean(row.asJSON())
     }))
     .batch(size)
     .map(group => group.collect())
@@ -794,7 +797,7 @@ function getEntities (arr, { kind, datastore, size = 400 }) {
 
 function getKeys (arr, { size = 400 } = {}) {
   return teme(arrify(arr))
-    .filter(row => row instanceof Row)
+    .filter(row => row instanceof Row && row._key)
     .map(row => row._key)
     .batch(size)
     .map(group => group.collect())
@@ -908,6 +911,100 @@ class UniqueIndex extends Index {
   }
 }
 
+const factors = Array(9)
+  .fill()
+  .map((_, n) => Math.pow(10, n));
+
+const inspect = Symbol.for('nodejs.util.inspect.custom');
+
+function toNumber (x) {
+  if (typeof x === 'number') return x
+  const v = parseFloat(x);
+  if (v.toString() === x) return v
+  console.log('Number=%o', x);
+  throw new TypeError('Invalid number: ' + x)
+}
+
+function currency (x, prec = 2) {
+  if (x instanceof Currency) return x
+  if (!(prec in factors)) throw new TypeError('Invalid precision')
+  return Currency.from(toNumber(x), prec)
+}
+
+currency.import = (x, prec = 2) => new Currency(toNumber(x), prec);
+
+class Currency {
+  static from (value, prec) {
+    return new Currency(value * factors[prec], prec)
+  }
+
+  constructor (num, prec) {
+    this.num = Math.round(num);
+    this.prec = prec;
+    Object.freeze(this);
+  }
+
+  [inspect] () {
+    return `Currency { ${this.toNumber().toFixed(this.prec)} }`
+  }
+
+  export () {
+    return this.num
+  }
+
+  toNumber () {
+    return this.num / factors[this.prec]
+  }
+
+  toPrecision (prec) {
+    if (this.prec === prec) return this
+    return Currency.from(this.toNumber(), prec)
+  }
+
+  toString () {
+    return this.toNumber().toString()
+  }
+
+  valueOf () {
+    return this.toString()
+  }
+
+  add (x) {
+    x = currency(x);
+    const prec = Math.max(x.prec, this.prec);
+    x = x.toPrecision(prec);
+    const me = this.toPrecision(prec);
+    return new Currency(me.num + x.num, prec)
+  }
+
+  sub (x) {
+    x = currency(x);
+    const prec = Math.max(x.prec, this.prec);
+    x = x.toPrecision(prec);
+    const me = this.toPrecision(prec);
+    return new Currency(me.num - x.num, prec)
+  }
+
+  mul (x) {
+    x = currency(x);
+    return new Currency(this.num * x.toNumber(), this.prec)
+  }
+
+  div (x) {
+    x = currency(x);
+    if (!x.num) throw new Error('Cannot divide by zero')
+    return new Currency(this.num / x.toNumber(), this.prec)
+  }
+
+  abs () {
+    return new Currency(Math.abs(this.num), this.prec)
+  }
+
+  neg () {
+    return new Currency(-this.num, this.prec)
+  }
+}
+
 class Portfolio {
   constructor () {
     this.stocks = new Stocks();
@@ -993,7 +1090,25 @@ class Trades extends IndexedTable {
   }
 }
 
-class Trade extends Row {}
+class Trade extends Row {
+  constructor (data) {
+    const { cost, gain, ...rest } = data;
+    super({
+      ...rest,
+      cost: typeof cost === 'number' ? currency.import(cost, 2) : undefined,
+      gain: typeof gain === 'number' ? currency.import(gain, 2) : undefined
+    });
+  }
+
+  asJSON () {
+    const { cost, gain } = this;
+    return {
+      ...this,
+      cost: cost != null ? cost.export() : cost,
+      gain: gain != null ? gain.export() : gain
+    }
+  }
+}
 
 const SCOPES$1 = {
   rw: ['https://www.googleapis.com/auth/spreadsheets'],
@@ -1327,17 +1442,28 @@ function rowToTrade () {
   const account = 'Dealing';
   let who;
   let ticker;
-  return ([who_, ticker_, date, qty, cost, notes]) => {
-    who = who_ || who;
-    ticker = ticker_ || ticker;
-    return { who, account, ticker, date, qty, cost, notes }
-  }
+  return ([who_, ticker_, date, qty, cost, notes]) => ({
+    who: (who = who_ || who),
+    account,
+    ticker: (ticker = ticker_ || ticker),
+    date,
+    qty: makeNumber(qty),
+    cost: makeNumber(cost),
+    notes
+  })
+}
+
+function makeNumber (x) {
+  return typeof x === 'number' ? x : !x ? undefined : x
+}
+
+function isNumber (x) {
+  return x === undefined || typeof x === 'number'
 }
 
 function validTrade ({ who, ticker, date, qty, cost }) {
   if (!who || !ticker || typeof date !== 'number') return false
-  if (qty && typeof qty !== 'number') return false
-  if (cost && typeof cost !== 'number') return false
+  if (!isNumber(qty) || !isNumber(cost)) return false
   return qty || cost
 }
 
@@ -1345,7 +1471,7 @@ function cleanTrade ({ date, cost, ...rest }) {
   return {
     ...rest,
     date: toDate(date),
-    cost: cost ? Math.round(cost * 100) : cost
+    cost: cost != null ? currency(cost) : cost
   }
 }
 
@@ -1374,25 +1500,25 @@ function addCosts (groups) {
 }
 
 function buildPosition () {
-  const pos = { qty: 0, cost: 0 };
+  const pos = { qty: 0, cost: currency(0) };
   return trade => {
     const { qty, cost } = trade;
     if (qty && cost && qty > 0) {
       // buy
       pos.qty += qty;
-      pos.cost += cost;
+      pos.cost = pos.cost.add(cost);
     } else if (qty && cost && qty < 0) {
       const prev = { ...pos };
-      const proceeds = -cost;
+      const proceeds = cost.abs();
       pos.qty += qty;
       const remain = prev.qty ? pos.qty / prev.qty : 0;
-      pos.cost = Math.round(remain * prev.cost);
-      trade.cost = pos.cost - prev.cost;
-      trade.gain = proceeds + trade.cost;
+      pos.cost = prev.cost.mul(remain);
+      trade.cost = prev.cost.sub(pos.cost).neg();
+      trade.gain = proceeds.sub(trade.cost.abs());
     } else if (qty) {
       pos.qty += qty;
     } else if (cost) {
-      pos.cost += cost;
+      pos.cost = pos.cost.add(cost);
     }
   }
 }
@@ -1900,8 +2026,8 @@ function makeTradeRow ({ who, account, ticker, date, qty, cost, gain }) {
     ticker,
     date,
     qty || 0,
-    cost ? cost / 100 : 0,
-    gain ? gain / 100 : 0
+    cost ? cost.toNumber() : 0,
+    gain ? gain.toNumber() : 0
   ]
 }
 
