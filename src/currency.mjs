@@ -8,7 +8,6 @@ function toNumber (x) {
   if (typeof x === 'number') return x
   const v = parseFloat(x)
   if (v.toString() === x) return v
-  console.log('Number=%o', x)
   throw new TypeError('Invalid number: ' + x)
 }
 
