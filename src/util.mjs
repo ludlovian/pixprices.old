@@ -1,5 +1,7 @@
 import { get as _get } from 'https'
 
+import decimal from './decimal.mjs'
+
 const USER_AGENT =
   'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36'
 
@@ -22,4 +24,15 @@ export function get (url) {
     })
     req.on('error', reject)
   })
+}
+
+export function maybeDecimal (x, prec) {
+  if (typeof x !== 'number') return undefined
+  let d = decimal(x)
+  if (prec != null) d = d.precision(prec)
+  return d
+}
+
+export function maybeNumber (x) {
+  return x ? x.number : undefined
 }

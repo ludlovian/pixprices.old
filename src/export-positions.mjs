@@ -3,6 +3,7 @@ import sortBy from 'sortby'
 import teme from 'teme'
 
 import { updatePositionsSheet } from './sheets.mjs'
+import decimal from './decimal.mjs'
 
 const debug = log
   .prefix('export-positions:')
@@ -35,15 +36,22 @@ function addStock (stocks) {
 }
 
 function makePositionRow ({ position: p, stock: s }) {
+  const _yield =
+    s.price && s.dividend
+      ? decimal(s.dividend.number / s.price.number).precision(3).number
+      : 0
+  const value = p.qty && s.price ? s.price.mul(p.qty).precision(2).number : 0
+  const income =
+    p.qty && s.dividend ? s.dividend.mul(p.qty).precision(2).number : 0
   return [
     p.ticker,
     p.who,
     p.account,
-    p.qty,
-    s.price || 0,
-    s.dividend || 0,
-    s.dividend && s.price ? s.dividend / s.price : 0,
-    Math.round(p.qty * s.price) / 100 || 0,
-    s.dividend ? Math.round(p.qty * s.dividend) / 100 : 0
+    p.qty ? p.qty.number : 0,
+    s.price ? s.price.number : 0,
+    s.dividend ? s.dividend.number : 0,
+    _yield,
+    value,
+    income
   ]
 }

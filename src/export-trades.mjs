@@ -31,8 +31,8 @@ function makeTradeRow ({ who, account, ticker, date, qty, cost, gain }) {
     account,
     ticker,
     date,
-    qty || 0,
-    cost ? cost.toNumber() : 0,
-    gain ? gain.toNumber() : 0
+    qty ? qty.number : 0,
+    cost ? cost.number : 0,
+    gain ? gain.number : 0
   ]
 }

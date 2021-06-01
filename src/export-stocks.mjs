@@ -27,7 +27,14 @@ export async function exportStocks ({ stocks }) {
 
 function stockToRow (row) {
   const { ticker, incomeType, name, price, dividend, notes } = row
-  return [ticker, incomeType, name, price || 0, dividend || 0, notes]
+  return [
+    ticker,
+    incomeType,
+    name,
+    price ? price.number : 0,
+    dividend ? dividend.number : 0,
+    notes
+  ]
 }
 
 function makeCSV (arr) {

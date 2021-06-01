@@ -1,6 +1,8 @@
 import log from 'logjs'
+import teme from 'teme'
 
 import { getPortfolioSheet } from './sheets.mjs'
+import { maybeDecimal } from './util.mjs'
 
 const debug = log
   .prefix('import-portfolio:')
@@ -30,7 +32,7 @@ function updateStocks (stocks, rangeData, options) {
   }
   notSeen.forEach(clearDividend)
   debug(
-    'Updated %d and removed %d dividends from portfolio sheet',
+    'Updated %d and cleared %d dividends from portfolio sheet',
     count,
     notSeen.size
   )
@@ -40,23 +42,16 @@ function updateStocks (stocks, rangeData, options) {
   }
 }
 
-function * getStockData (rangeData, options = {}) {
+function getStockData (rangeData, options = {}) {
   const {
     tickerColumn = DEFAULT_TICKER_COLUMN,
     divColumn = DEFAULT_DIV_COLUMN
   } = options
 
-  for (const row of rangeData) {
-    const ticker = row[tickerColumn]
-    if (!ticker) continue
-    const div = row[divColumn]
-    const item = {
-      ticker,
-      dividend:
-        div && typeof div === 'number' ? Math.round(div * 1e5) / 1e3 : undefined
-    }
-    yield item
-  }
+  return teme(rangeData)
+    .map(row => [row[tickerColumn], row[divColumn]])
+    .filter(([ticker]) => !!ticker)
+    .map(([ticker, div]) => ({ ticker, dividend: maybeDecimal(div) }))
 }
 
 function updatePositions (positions, rangeData, options) {
@@ -93,8 +88,8 @@ function * getPositionData (rangeData, options = {}) {
 
     const positions = row
       .slice(accountCol, accountCol + accts.length)
-      .map((qty, i) => ({ ...accts[i], ticker, qty }))
-      .filter(({ qty }) => qty && typeof qty === 'number')
+      .map((qty, i) => ({ ...accts[i], ticker, qty: maybeDecimal(qty) }))
+      .filter(({ qty }) => qty && qty.number)
 
     yield * positions
   }

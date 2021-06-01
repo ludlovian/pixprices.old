@@ -2,7 +2,7 @@ import sortBy from 'sortby'
 import { Row } from 'googlejs/datastore'
 import { IndexedTable, Index, UniqueIndex } from 'googlejs/table'
 
-import currency from './currency.mjs'
+import { maybeDecimal, maybeNumber } from './util.mjs'
 
 export default class Portfolio {
   constructor () {
@@ -41,7 +41,25 @@ class Stocks extends IndexedTable {
   }
 }
 
-class Stock extends Row {}
+class Stock extends Row {
+  constructor (data) {
+    const { price, dividend, ...rest } = data
+    super({
+      ...rest,
+      price: maybeDecimal(price),
+      dividend: maybeDecimal(dividend)
+    })
+  }
+
+  asJSON () {
+    const { price, dividend } = this
+    return {
+      ...this,
+      price: maybeNumber(price),
+      dividend: maybeNumber(dividend)
+    }
+  }
+}
 
 class Positions extends IndexedTable {
   constructor () {
@@ -56,7 +74,20 @@ class Positions extends IndexedTable {
   }
 }
 
-class Position extends Row {}
+class Position extends Row {
+  constructor (data) {
+    const { qty, ...rest } = data
+    super({
+      ...rest,
+      qty: maybeDecimal(qty, 0)
+    })
+  }
+
+  asJSON () {
+    const { qty } = this
+    return { ...this, qty: maybeNumber(qty) }
+  }
+}
 
 class Trades extends IndexedTable {
   constructor () {
@@ -91,20 +122,22 @@ class Trades extends IndexedTable {
 
 class Trade extends Row {
   constructor (data) {
-    const { cost, gain, ...rest } = data
+    const { cost, gain, qty, ...rest } = data
     super({
       ...rest,
-      cost: typeof cost === 'number' ? currency.import(cost, 2) : undefined,
-      gain: typeof gain === 'number' ? currency.import(gain, 2) : undefined
+      qty: maybeDecimal(qty, 0),
+      cost: maybeDecimal(cost, 2),
+      gain: maybeDecimal(gain, 2)
     })
   }
 
   asJSON () {
-    const { cost, gain } = this
+    const { qty, cost, gain } = this
     return {
       ...this,
-      cost: cost != null ? cost.export() : cost,
-      gain: gain != null ? gain.export() : gain
+      qty: maybeNumber(qty),
+      cost: maybeNumber(cost),
+      gain: maybeNumber(gain)
     }
   }
 }

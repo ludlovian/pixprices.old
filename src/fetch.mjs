@@ -17,13 +17,34 @@ const attempts = [
 ]
 
 export async function updatePrices ({ stocks, positions }) {
-  const tickers = uniq([...positions.values()].map(({ ticker }) => ticker))
-  const prices = getPrices(tickers)
+  // we fetch prices for anything that we have a position in, or where
+  // we have manually caught dividends
+  const needed = new Set(
+    uniq(
+      [...positions.values()].map(p => p.ticker),
+      [...stocks.values()].filter(s => s.dividend).map(s => s.ticker)
+    )
+  )
+
+  const unneeded = new Set(
+    [...stocks.values()].map(s => s.ticker).filter(t => !needed.has(t))
+  )
+
+  const prices = getPrices(needed)
   for await (const item of prices) {
     const s = stocks.get(item.ticker)
     stocks.set({
       ...item,
       name: s ? s.name || item.name : item.name
+    })
+  }
+
+  for (const ticker of unneeded) {
+    stocks.set({
+      ticker,
+      price: undefined,
+      priceSource: undefined,
+      priceUpdated: undefined
     })
   }
 }

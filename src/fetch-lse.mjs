@@ -2,6 +2,7 @@ import log from 'logjs'
 import sleep from 'pixutil/sleep'
 import Scrapie from 'scrapie'
 
+import decimal from './decimal.mjs'
 import { get } from './util.mjs'
 
 const debug = log
@@ -34,7 +35,7 @@ async function * fetchCollection (url, collClass, priceSource) {
   const items = []
   const addItem = data => {
     const { name, ticker } = extractNameAndTicker(data[0])
-    const price = extractNumber(data[1])
+    const price = decimal(extractNumber(data[1]) / 100)
     items.push({ ticker, name, price, priceUpdated, priceSource })
     count++
   }
@@ -72,7 +73,7 @@ export async function fetchPrice (ticker) {
   const item = {
     ticker,
     name: '',
-    price: null,
+    price: undefined,
     priceUpdated: new Date(),
     priceSource: 'lse:share'
   }
@@ -87,7 +88,7 @@ export async function fetchPrice (ticker) {
   })
 
   scrapie.when(whenBid).on('text', t => {
-    item.price = item.price || extractNumber(t)
+    item.price = item.price || decimal(extractNumber(t) / 100)
   })
 
   const source = await get(url)

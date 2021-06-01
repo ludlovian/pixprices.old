@@ -5,7 +5,8 @@ import teme from 'teme'
 import pipeline from 'pixutil/pipeline'
 
 import { getTradesSheet } from './sheets.mjs'
-import currency from './currency.mjs'
+import { maybeDecimal } from './util.mjs'
+import decimal from './decimal.mjs'
 
 const debug = log
   .prefix('import-trades:')
@@ -33,10 +34,7 @@ function getTradeGroups (rows) {
 }
 
 function readTrades (rows) {
-  return rows
-    .map(rowToTrade())
-    .filter(validTrade)
-    .map(cleanTrade)
+  return rows.map(rowToTrade()).filter(validTrade)
 }
 
 function rowToTrade () {
@@ -47,39 +45,26 @@ function rowToTrade () {
     who: (who = who_ || who),
     account,
     ticker: (ticker = ticker_ || ticker),
-    date,
-    qty: makeNumber(qty),
-    cost: makeNumber(cost),
+    date: maybeDate(date),
+    qty: maybeDecimal(qty, 0),
+    cost: maybeDecimal(cost, 2),
     notes
   })
 }
 
-function makeNumber (x) {
-  return typeof x === 'number' ? x : !x ? undefined : x
-}
-
-function isNumber (x) {
-  return x === undefined || typeof x === 'number'
+function maybeDate (x) {
+  return typeof x === 'number' ? toDate(x) : undefined
 }
 
 function validTrade ({ who, ticker, date, qty, cost }) {
-  if (!who || !ticker || typeof date !== 'number') return false
-  if (!isNumber(qty) || !isNumber(cost)) return false
-  return qty || cost
-}
-
-function cleanTrade ({ date, cost, ...rest }) {
-  return {
-    ...rest,
-    date: toDate(date),
-    cost: cost != null ? currency(cost) : cost
-  }
+  return who && ticker && date && (qty || cost)
 }
 
 function sortTrades (trades) {
   const sortFn = sortBy('who')
     .thenBy('account')
     .thenBy('ticker')
+    .thenBy('date')
     .thenBy('seq')
 
   let seq = 0
@@ -101,23 +86,23 @@ function addCosts (groups) {
 }
 
 function buildPosition () {
-  const pos = { qty: 0, cost: currency(0) }
+  const pos = { qty: decimal(0), cost: decimal(0) }
   return trade => {
     const { qty, cost } = trade
-    if (qty && cost && qty > 0) {
+    if (qty && cost && qty.number > 0) {
       // buy
-      pos.qty += qty
+      pos.qty = pos.qty.add(qty)
       pos.cost = pos.cost.add(cost)
-    } else if (qty && cost && qty < 0) {
+    } else if (qty && cost && qty.number < 0) {
       const prev = { ...pos }
       const proceeds = cost.abs()
-      pos.qty += qty
-      const remain = prev.qty ? pos.qty / prev.qty : 0
+      pos.qty = pos.qty.add(qty)
+      const remain = prev.qty.number ? pos.qty.number / prev.qty.number : 0
       pos.cost = prev.cost.mul(remain)
       trade.cost = prev.cost.sub(pos.cost).neg()
       trade.gain = proceeds.sub(trade.cost.abs())
     } else if (qty) {
-      pos.qty += qty
+      pos.qty = pos.qty.add(qty)
     } else if (cost) {
       pos.cost = pos.cost.add(cost)
     }

@@ -290,7 +290,7 @@ class Teme {
       if (!equal(key, tgt)) return { done: true }
       const _item = item;
       item = await it.next();
-      if (!item.done) key = fn(item.value);
+      key = item.done ? EMPTY : fn(item.value);
       return _item
     }
   }
@@ -451,7 +451,7 @@ class TemeSync extends Teme {
       if (!equal(key, tgt)) return { done: true }
       const _item = item;
       item = it.next();
-      if (!item.done) key = fn(item.value);
+      key = item.done ? EMPTY : fn(item.value);
       return _item
     }
   }
@@ -785,7 +785,7 @@ const getDatastoreAPI = once(async function getDatastoreAPI ({
 
 function getEntities (arr, { kind, datastore, size = 400 }) {
   return teme(arrify(arr))
-    .map(row => (row instanceof Row) ? row : new Row(row))
+    .map(row => (row instanceof Row ? row : new Row(row)))
     .filter(row => row._changed())
     .map(row => ({
       key: row._key || datastore.key([kind]),
@@ -837,7 +837,8 @@ class IndexedTable extends Table {
       this._changed.add(row);
       return row
     } else {
-      const row = { ...data };
+      const Factory = this.factory || Row;
+      const row = Object.assign(new Factory({}), data);
       for (const k in this.ix) this.ix[k].add(row);
       this._changed.add(row);
       return row
@@ -911,98 +912,154 @@ class UniqueIndex extends Index {
   }
 }
 
-const factors = Array(9)
+const factors = Array(13)
   .fill()
   .map((_, n) => Math.pow(10, n));
 
 const inspect = Symbol.for('nodejs.util.inspect.custom');
+const DIGS = Symbol('digits');
+const PREC = Symbol('precision');
 
-function toNumber (x) {
-  if (typeof x === 'number') return x
-  const v = parseFloat(x);
-  if (v.toString() === x) return v
-  console.log('Number=%o', x);
-  throw new TypeError('Invalid number: ' + x)
+function decimal (number, opts = {}) {
+  if (number instanceof Decimal) return number
+  const { minPrecision = 0, maxPrecision = 12 } = opts;
+  const [d, p] = parseNumber(number, minPrecision, maxPrecision);
+  return new Decimal(d, p)
 }
 
-function currency (x, prec = 2) {
-  if (x instanceof Currency) return x
-  if (!(prec in factors)) throw new TypeError('Invalid precision')
-  return Currency.from(toNumber(x), prec)
-}
-
-currency.import = (x, prec = 2) => new Currency(toNumber(x), prec);
-
-class Currency {
-  static from (value, prec) {
-    return new Currency(value * factors[prec], prec)
+class Decimal {
+  constructor (digits, precision) {
+    Object.freeze(
+      Object.defineProperties(this, {
+        [DIGS]: { value: Math.round(digits) },
+        [PREC]: { value: precision }
+      })
+    );
   }
 
-  constructor (num, prec) {
-    this.num = Math.round(num);
-    this.prec = prec;
-    Object.freeze(this);
+  [inspect] (depth, opts) {
+    /* c8 ignore next */
+    if (depth < 0) return opts.stylize('[Decimal]', 'number')
+    return `Decimal { ${opts.stylize(this.toString(), 'number')} }`
   }
 
-  [inspect] () {
-    return `Currency { ${this.toNumber().toFixed(this.prec)} }`
+  get tuple () {
+    return [this[DIGS], this[PREC]]
   }
 
-  export () {
-    return this.num
+  get number () {
+    return this[DIGS] / factors[this[PREC]]
   }
 
-  toNumber () {
-    return this.num / factors[this.prec]
-  }
-
-  toPrecision (prec) {
-    if (this.prec === prec) return this
-    return Currency.from(this.toNumber(), prec)
+  precision (p) {
+    if (this[PREC] === p) return this
+    if (!(p in factors)) throw new TypeError('Unsupported precision')
+    if (p > this[PREC]) {
+      const factor = factors[p - this[PREC]];
+      return new Decimal(this[DIGS] * factor, p)
+    } else {
+      const factor = factors[this[PREC] - p];
+      return new Decimal(this[DIGS] / factor, p)
+    }
   }
 
   toString () {
-    return this.toNumber().toString()
+    return this.number.toFixed(this[PREC])
   }
 
   valueOf () {
     return this.toString()
   }
 
-  add (x) {
-    x = currency(x);
-    const prec = Math.max(x.prec, this.prec);
-    x = x.toPrecision(prec);
-    const me = this.toPrecision(prec);
-    return new Currency(me.num + x.num, prec)
+  add (other) {
+    const x = this;
+    const y = decimal(other);
+    const p = Math.max(x[PREC], y[PREC]);
+    return new Decimal(x.precision(p)[DIGS] + y.precision(p)[DIGS], p)
   }
 
-  sub (x) {
-    x = currency(x);
-    const prec = Math.max(x.prec, this.prec);
-    x = x.toPrecision(prec);
-    const me = this.toPrecision(prec);
-    return new Currency(me.num - x.num, prec)
+  sub (other) {
+    other = decimal(other);
+    return this.add(decimal(other).neg())
   }
 
   mul (x) {
-    x = currency(x);
-    return new Currency(this.num * x.toNumber(), this.prec)
+    x = decimal(x).number;
+    return new Decimal(this[DIGS] * x, this[PREC])
   }
 
   div (x) {
-    x = currency(x);
-    if (!x.num) throw new Error('Cannot divide by zero')
-    return new Currency(this.num / x.toNumber(), this.prec)
+    x = decimal(x).number;
+    if (!x) throw new Error('Cannot divide by zero')
+    return new Decimal(this[DIGS] / x, this[PREC])
   }
 
   abs () {
-    return new Currency(Math.abs(this.num), this.prec)
+    return new Decimal(Math.abs(this[DIGS]), this[PREC])
   }
 
   neg () {
-    return new Currency(-this.num, this.prec)
+    return new Decimal(-this[DIGS], this[PREC])
   }
+}
+
+function parseNumber (n, minp, maxp) {
+  let s;
+  if (typeof n === 'string') {
+    s = n;
+    n = parseFloat(s);
+    if (isNaN(n) || n.toString() !== s) {
+      throw new TypeError('Invalid number: ' + s)
+    }
+  } else if (typeof n === 'number') {
+    s = n.toString();
+  } else {
+    throw new TypeError('Invalid number: ' + n)
+  }
+  const p = minmax((s.split('.')[1] || '').length, minp, maxp);
+  if (!(p in factors)) throw new TypeError('Unsupported precision')
+  const d = Math.round(n * factors[p]);
+  return [d, p]
+}
+
+function minmax (x, min, max) {
+  /* c8 ignore next */
+  return x < min ? min : x > max ? max : x
+}
+
+const USER_AGENT =
+  'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36';
+
+function get (url) {
+  return new Promise((resolve, reject) => {
+    const req = get$1(url, { headers: { 'User-Agent': USER_AGENT } }, res => {
+      const { statusCode } = res;
+      if (statusCode >= 400) {
+        const { statusMessage, headers } = res;
+        return reject(
+          Object.assign(new Error(res.statusMessage), {
+            statusMessage,
+            statusCode,
+            headers,
+            url
+          })
+        )
+      }
+      resolve(res);
+    });
+    req.on('error', reject);
+  })
+}
+
+function maybeDecimal (x, prec) {
+  if (typeof x !== 'number') return undefined
+  let d = decimal(x);
+  if (prec != null) d = d.precision(prec);
+  return d
+}
+
+function maybeNumber (x) {
+  return x ? x.number : undefined
 }
 
 class Portfolio {
@@ -1042,7 +1099,25 @@ class Stocks extends IndexedTable {
   }
 }
 
-class Stock extends Row {}
+class Stock extends Row {
+  constructor (data) {
+    const { price, dividend, ...rest } = data;
+    super({
+      ...rest,
+      price: maybeDecimal(price),
+      dividend: maybeDecimal(dividend)
+    });
+  }
+
+  asJSON () {
+    const { price, dividend } = this;
+    return {
+      ...this,
+      price: maybeNumber(price),
+      dividend: maybeNumber(dividend)
+    }
+  }
+}
 
 class Positions extends IndexedTable {
   constructor () {
@@ -1057,7 +1132,20 @@ class Positions extends IndexedTable {
   }
 }
 
-class Position extends Row {}
+class Position extends Row {
+  constructor (data) {
+    const { qty, ...rest } = data;
+    super({
+      ...rest,
+      qty: maybeDecimal(qty, 0)
+    });
+  }
+
+  asJSON () {
+    const { qty } = this;
+    return { ...this, qty: maybeNumber(qty) }
+  }
+}
 
 class Trades extends IndexedTable {
   constructor () {
@@ -1092,20 +1180,22 @@ class Trades extends IndexedTable {
 
 class Trade extends Row {
   constructor (data) {
-    const { cost, gain, ...rest } = data;
+    const { cost, gain, qty, ...rest } = data;
     super({
       ...rest,
-      cost: typeof cost === 'number' ? currency.import(cost, 2) : undefined,
-      gain: typeof gain === 'number' ? currency.import(gain, 2) : undefined
+      qty: maybeDecimal(qty, 0),
+      cost: maybeDecimal(cost, 2),
+      gain: maybeDecimal(gain, 2)
     });
   }
 
   asJSON () {
-    const { cost, gain } = this;
+    const { qty, cost, gain } = this;
     return {
       ...this,
-      cost: cost != null ? cost.export() : cost,
-      gain: gain != null ? gain.export() : gain
+      qty: maybeNumber(qty),
+      cost: maybeNumber(cost),
+      gain: maybeNumber(gain)
     }
   }
 }
@@ -1330,7 +1420,7 @@ function updateStocks (stocks, rangeData, options) {
   }
   notSeen.forEach(clearDividend);
   debug$7(
-    'Updated %d and removed %d dividends from portfolio sheet',
+    'Updated %d and cleared %d dividends from portfolio sheet',
     count,
     notSeen.size
   );
@@ -1340,23 +1430,16 @@ function updateStocks (stocks, rangeData, options) {
   }
 }
 
-function * getStockData (rangeData, options = {}) {
+function getStockData (rangeData, options = {}) {
   const {
     tickerColumn = DEFAULT_TICKER_COLUMN,
     divColumn = DEFAULT_DIV_COLUMN
   } = options;
 
-  for (const row of rangeData) {
-    const ticker = row[tickerColumn];
-    if (!ticker) continue
-    const div = row[divColumn];
-    const item = {
-      ticker,
-      dividend:
-        div && typeof div === 'number' ? Math.round(div * 1e5) / 1e3 : undefined
-    };
-    yield item;
-  }
+  return teme(rangeData)
+    .map(row => [row[tickerColumn], row[divColumn]])
+    .filter(([ticker]) => !!ticker)
+    .map(([ticker, div]) => ({ ticker, dividend: maybeDecimal(div) }))
 }
 
 function updatePositions (positions, rangeData, options) {
@@ -1393,8 +1476,8 @@ function * getPositionData (rangeData, options = {}) {
 
     const positions = row
       .slice(accountCol, accountCol + accts.length)
-      .map((qty, i) => ({ ...accts[i], ticker, qty }))
-      .filter(({ qty }) => qty && typeof qty === 'number');
+      .map((qty, i) => ({ ...accts[i], ticker, qty: maybeDecimal(qty) }))
+      .filter(({ qty }) => qty && qty.number);
 
     yield * positions;
   }
@@ -1432,10 +1515,7 @@ function getTradeGroups (rows) {
 }
 
 function readTrades (rows) {
-  return rows
-    .map(rowToTrade())
-    .filter(validTrade)
-    .map(cleanTrade)
+  return rows.map(rowToTrade()).filter(validTrade)
 }
 
 function rowToTrade () {
@@ -1446,39 +1526,26 @@ function rowToTrade () {
     who: (who = who_ || who),
     account,
     ticker: (ticker = ticker_ || ticker),
-    date,
-    qty: makeNumber(qty),
-    cost: makeNumber(cost),
+    date: maybeDate(date),
+    qty: maybeDecimal(qty, 0),
+    cost: maybeDecimal(cost, 2),
     notes
   })
 }
 
-function makeNumber (x) {
-  return typeof x === 'number' ? x : !x ? undefined : x
-}
-
-function isNumber (x) {
-  return x === undefined || typeof x === 'number'
+function maybeDate (x) {
+  return typeof x === 'number' ? toDate(x) : undefined
 }
 
 function validTrade ({ who, ticker, date, qty, cost }) {
-  if (!who || !ticker || typeof date !== 'number') return false
-  if (!isNumber(qty) || !isNumber(cost)) return false
-  return qty || cost
-}
-
-function cleanTrade ({ date, cost, ...rest }) {
-  return {
-    ...rest,
-    date: toDate(date),
-    cost: cost != null ? currency(cost) : cost
-  }
+  return who && ticker && date && (qty || cost)
 }
 
 function sortTrades (trades) {
   const sortFn = sortBy('who')
     .thenBy('account')
     .thenBy('ticker')
+    .thenBy('date')
     .thenBy('seq');
 
   let seq = 0;
@@ -1500,23 +1567,23 @@ function addCosts (groups) {
 }
 
 function buildPosition () {
-  const pos = { qty: 0, cost: currency(0) };
+  const pos = { qty: decimal(0), cost: decimal(0) };
   return trade => {
     const { qty, cost } = trade;
-    if (qty && cost && qty > 0) {
+    if (qty && cost && qty.number > 0) {
       // buy
-      pos.qty += qty;
+      pos.qty = pos.qty.add(qty);
       pos.cost = pos.cost.add(cost);
-    } else if (qty && cost && qty < 0) {
+    } else if (qty && cost && qty.number < 0) {
       const prev = { ...pos };
       const proceeds = cost.abs();
-      pos.qty += qty;
-      const remain = prev.qty ? pos.qty / prev.qty : 0;
+      pos.qty = pos.qty.add(qty);
+      const remain = prev.qty.number ? pos.qty.number / prev.qty.number : 0;
       pos.cost = prev.cost.mul(remain);
       trade.cost = prev.cost.sub(pos.cost).neg();
       trade.gain = proceeds.sub(trade.cost.abs());
     } else if (qty) {
-      pos.qty += qty;
+      pos.qty = pos.qty.add(qty);
     } else if (cost) {
       pos.cost = pos.cost.add(cost);
     }
@@ -1773,30 +1840,6 @@ function makeCondition (string) {
   return ({ type }) => type === t
 }
 
-const USER_AGENT =
-  'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36';
-
-function get (url) {
-  return new Promise((resolve, reject) => {
-    const req = get$1(url, { headers: { 'User-Agent': USER_AGENT } }, res => {
-      const { statusCode } = res;
-      if (statusCode >= 400) {
-        const { statusMessage, headers } = res;
-        return reject(
-          Object.assign(new Error(res.statusMessage), {
-            statusMessage,
-            statusCode,
-            headers,
-            url
-          })
-        )
-      }
-      resolve(res);
-    });
-    req.on('error', reject);
-  })
-}
-
 const debug$4 = log
   .prefix('lse:')
   .colour()
@@ -1827,7 +1870,7 @@ async function * fetchCollection (url, collClass, priceSource) {
   const items = [];
   const addItem = data => {
     const { name, ticker } = extractNameAndTicker(data[0]);
-    const price = extractNumber(data[1]);
+    const price = decimal(extractNumber(data[1]) / 100);
     items.push({ ticker, name, price, priceUpdated, priceSource });
     count++;
   };
@@ -1865,7 +1908,7 @@ async function fetchPrice (ticker) {
   const item = {
     ticker,
     name: '',
-    price: null,
+    price: undefined,
     priceUpdated: new Date(),
     priceSource: 'lse:share'
   };
@@ -1880,7 +1923,7 @@ async function fetchPrice (ticker) {
   });
 
   scrapie.when(whenBid).on('text', t => {
-    item.price = item.price || extractNumber(t);
+    item.price = item.price || decimal(extractNumber(t) / 100);
   });
 
   const source = await get(url);
@@ -1920,13 +1963,34 @@ const attempts = [
 ];
 
 async function updatePrices ({ stocks, positions }) {
-  const tickers = uniq([...positions.values()].map(({ ticker }) => ticker));
-  const prices = getPrices(tickers);
+  // we fetch prices for anything that we have a position in, or where
+  // we have manually caught dividends
+  const needed = new Set(
+    uniq(
+      [...positions.values()].map(p => p.ticker),
+      [...stocks.values()].filter(s => s.dividend).map(s => s.ticker)
+    )
+  );
+
+  const unneeded = new Set(
+    [...stocks.values()].map(s => s.ticker).filter(t => !needed.has(t))
+  );
+
+  const prices = getPrices(needed);
   for await (const item of prices) {
     const s = stocks.get(item.ticker);
     stocks.set({
       ...item,
       name: s ? s.name || item.name : item.name
+    });
+  }
+
+  for (const ticker of unneeded) {
+    stocks.set({
+      ticker,
+      price: undefined,
+      priceSource: undefined,
+      priceUpdated: undefined
     });
   }
 }
@@ -1984,16 +2048,23 @@ function addStock (stocks) {
 }
 
 function makePositionRow ({ position: p, stock: s }) {
+  const _yield =
+    s.price && s.dividend
+      ? decimal(s.dividend.number / s.price.number).precision(3).number
+      : 0;
+  const value = p.qty && s.price ? s.price.mul(p.qty).precision(2).number : 0;
+  const income =
+    p.qty && s.dividend ? s.dividend.mul(p.qty).precision(2).number : 0;
   return [
     p.ticker,
     p.who,
     p.account,
-    p.qty,
-    s.price || 0,
-    s.dividend || 0,
-    s.dividend && s.price ? s.dividend / s.price : 0,
-    Math.round(p.qty * s.price) / 100 || 0,
-    s.dividend ? Math.round(p.qty * s.dividend) / 100 : 0
+    p.qty ? p.qty.number : 0,
+    s.price ? s.price.number : 0,
+    s.dividend ? s.dividend.number : 0,
+    _yield,
+    value,
+    income
   ]
 }
 
@@ -2025,9 +2096,9 @@ function makeTradeRow ({ who, account, ticker, date, qty, cost, gain }) {
     account,
     ticker,
     date,
-    qty || 0,
-    cost ? cost.toNumber() : 0,
-    gain ? gain.toNumber() : 0
+    qty ? qty.number : 0,
+    cost ? cost.number : 0,
+    gain ? gain.number : 0
   ]
 }
 
@@ -2253,7 +2324,14 @@ async function exportStocks ({ stocks }) {
 
 function stockToRow (row) {
   const { ticker, incomeType, name, price, dividend, notes } = row;
-  return [ticker, incomeType, name, price || 0, dividend || 0, notes]
+  return [
+    ticker,
+    incomeType,
+    name,
+    price ? price.number : 0,
+    dividend ? dividend.number : 0,
+    notes
+  ]
 }
 
 function makeCSV (arr) {
