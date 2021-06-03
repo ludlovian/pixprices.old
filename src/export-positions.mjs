@@ -1,9 +1,9 @@
 import log from 'logjs'
 import sortBy from 'sortby'
 import teme from 'teme'
+import decimal from 'decimal'
 
 import { updatePositionsSheet } from './sheets.mjs'
-import decimal from './decimal.mjs'
 
 const debug = log
   .prefix('export-positions:')

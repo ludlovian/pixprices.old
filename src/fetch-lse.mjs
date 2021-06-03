@@ -2,8 +2,8 @@ import log from 'logjs'
 import sleep from 'pixutil/sleep'
 import Scrapie from 'scrapie'
 
-import decimal from './decimal.mjs'
-import { get } from './util.mjs'
+import decimal from 'decimal'
+import { get, toISODateTime } from './util.mjs'
 
 const debug = log
   .prefix('lse:')
@@ -30,7 +30,7 @@ export function fetchSector (sectorName) {
 async function * fetchCollection (url, collClass, priceSource) {
   await sleep(500)
 
-  const priceUpdated = new Date()
+  const priceUpdated = toISODateTime(new Date())
   let count = 0
   const items = []
   const addItem = data => {
@@ -74,7 +74,7 @@ export async function fetchPrice (ticker) {
     ticker,
     name: '',
     price: undefined,
-    priceUpdated: new Date(),
+    priceUpdated: toISODateTime(new Date()),
     priceSource: 'lse:share'
   }
 

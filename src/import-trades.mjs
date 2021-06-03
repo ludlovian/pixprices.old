@@ -1,12 +1,14 @@
+import tinydate from 'tinydate'
+
 import log from 'logjs'
 import { toDate } from 'googlejs/sheets'
 import sortBy from 'sortby'
 import teme from 'teme'
 import pipeline from 'pixutil/pipeline'
+import decimal from 'decimal'
 
 import { getTradesSheet } from './sheets.mjs'
 import { maybeDecimal } from './util.mjs'
-import decimal from './decimal.mjs'
 
 const debug = log
   .prefix('import-trades:')
@@ -53,8 +55,10 @@ function rowToTrade () {
 }
 
 function maybeDate (x) {
-  return typeof x === 'number' ? toDate(x) : undefined
+  return typeof x === 'number' ? plainDateString(toDate(x)) : undefined
 }
+
+const plainDateString = tinydate('{YYYY}-{MM}-{DD}')
 
 function validTrade ({ who, ticker, date, qty, cost }) {
   return who && ticker && date && (qty || cost)

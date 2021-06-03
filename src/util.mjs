@@ -27,10 +27,15 @@ export function get (url) {
 }
 
 export function maybeDecimal (x, prec) {
-  if (typeof x !== 'number') return undefined
-  let d = decimal(x)
-  if (prec != null) d = d.precision(prec)
-  return d
+  if (x == null || x === '') return undefined
+  try {
+    let d = decimal(x)
+    if (prec != null) d = d.precision(prec)
+    return d
+  } catch (e) {
+    console.log('Trying to decimal (%s): %o', typeof x, x)
+    throw e
+  }
 }
 
 export function maybeNumber (x) {
