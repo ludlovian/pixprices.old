@@ -2,7 +2,7 @@ import log from 'logjs'
 import teme from 'teme'
 import uniq from 'pixutil/uniq'
 
-import { fetchIndex, fetchSector, fetchPrice } from './fetch-lse.mjs'
+import { fetchIndex, fetchSector, fetchPrice } from './lse.mjs'
 
 const debug = log
   .prefix('fetch:')
@@ -16,23 +16,23 @@ const attempts = [
   ['closed-end-investments', fetchSector]
 ]
 
-export async function updatePrices ({ stocks, positions }) {
+export default async function fetchPrices ({ stocks, positions }) {
   // we fetch prices for anything that we have a position in, or where
   // we have manually caught dividends
   const needed = new Set(
     uniq(
-      [...positions.values()].map(p => p.ticker),
-      [...stocks.values()].filter(s => s.dividend).map(s => s.ticker)
+      [...positions.all()].map(p => p.ticker),
+      [...stocks.all()].filter(s => s.dividend).map(s => s.ticker)
     )
   )
 
   const unneeded = new Set(
-    [...stocks.values()].map(s => s.ticker).filter(t => !needed.has(t))
+    [...stocks.all()].map(s => s.ticker).filter(t => !needed.has(t))
   )
 
   const prices = getPrices(needed)
   for await (const item of prices) {
-    const s = stocks.get(item.ticker)
+    const s = stocks.get({ ticker: item.ticker })
     stocks.set({
       ...item,
       name: s ? s.name || item.name : item.name

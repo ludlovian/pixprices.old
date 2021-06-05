@@ -1,9 +1,23 @@
 import { get as _get } from 'https'
 
-import decimal from './decimal.mjs'
+import tinydate from 'tinydate'
 
 const USER_AGENT =
   'Mozilla/5.0 (X11; CrOS x86_64 13729.56.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.95 Safari/537.36'
+
+export const toISODateTime = tinydate(
+  '{YYYY}-{MM}-{DD}T{HH}:{mm}:{ss}.{fff}{TZ}',
+  { TZ: getTZString }
+)
+
+function getTZString (d) {
+  const o = d.getTimezoneOffset()
+  const a = Math.abs(o)
+  const s = o < 0 ? '+' : '-'
+  const h = ('0' + Math.floor(a / 60)).slice(-2)
+  const m = ('0' + (a % 60)).slice(-2)
+  return s + h + ':' + m
+}
 
 export function get (url) {
   return new Promise((resolve, reject) => {
@@ -24,20 +38,4 @@ export function get (url) {
     })
     req.on('error', reject)
   })
-}
-
-export function maybeDecimal (x, prec) {
-  if (x == null || x === '') return undefined
-  try {
-    let d = decimal(x)
-    if (prec != null) d = d.precision(prec)
-    return d
-  } catch (e) {
-    console.log('Trying to decimal (%s): %o', typeof x, x)
-    throw e
-  }
-}
-
-export function maybeNumber (x) {
-  return x ? x.number : undefined
 }

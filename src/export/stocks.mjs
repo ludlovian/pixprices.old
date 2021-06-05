@@ -4,16 +4,18 @@ import log from 'logjs'
 import sortBy from 'sortby'
 import { upload } from 'googlejs/storage'
 
+import { exportDecimal, makeCSV } from './util.mjs'
+
 const debug = log
-  .prefix('export-stocks:')
+  .prefix('export:stocks:')
   .colour()
   .level(2)
 
 const STOCKS_URI = 'gs://finance-readersludlow/stocks.csv'
 const TEMPFILE = '/tmp/stocks.csv'
 
-export async function exportStocks ({ stocks }) {
-  const data = [...stocks.values()]
+export default async function exportStocks ({ stocks }) {
+  const data = [...stocks.all()]
     .sort(sortBy('ticker'))
     .map(stockToRow)
     .map(makeCSV)
@@ -31,20 +33,8 @@ function stockToRow (row) {
     ticker,
     incomeType,
     name,
-    price ? price.number : 0,
-    dividend ? dividend.number : 0,
+    exportDecimal(price),
+    exportDecimal(dividend),
     notes
   ]
-}
-
-function makeCSV (arr) {
-  return (
-    arr
-      .map(v => {
-        if (typeof v === 'number') return v.toString()
-        if (v == null) return ''
-        return '"' + v.toString().replaceAll('"', '""') + '"'
-      })
-      .join(',') + '\n'
-  )
 }

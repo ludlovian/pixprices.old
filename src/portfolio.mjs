@@ -1,8 +1,13 @@
-import sortBy from 'sortby'
-import { Row } from 'googlejs/datastore'
-import { IndexedTable, Index, UniqueIndex } from 'googlejs/table'
-
-import { maybeDecimal, maybeNumber } from './util.mjs'
+import Stocks from './db/stock.mjs'
+import Positions from './db/position.mjs'
+import Trades from './db/trade.mjs'
+import importStocks from './import/stocks.mjs'
+import importPortfolio from './import/portfolio.mjs'
+import importTrades from './import/trades.mjs'
+import fetchPrices from './fetch/prices.mjs'
+import exportPositions from './export/positions.mjs'
+import exportTrades from './export/trades.mjs'
+import exportStocks from './export/stocks.mjs'
 
 export default class Portfolio {
   constructor () {
@@ -26,118 +31,32 @@ export default class Portfolio {
       this.trades.save()
     ])
   }
-}
 
-class Stocks extends IndexedTable {
-  constructor () {
-    super('Stock')
-    this.factory = Stock
-    this.order = sortBy('ticker')
-    this.ix.main = new UniqueIndex(({ ticker }) => ticker)
+  importStocks () {
+    return importStocks(this)
   }
 
-  get (ticker) {
-    return this.ix.main.get({ ticker })
-  }
-}
-
-class Stock extends Row {
-  constructor (data) {
-    const { price, dividend, ...rest } = data
-    super({
-      ...rest,
-      price: maybeDecimal(price),
-      dividend: maybeDecimal(dividend)
-    })
+  importPortfolio () {
+    return importPortfolio(this)
   }
 
-  asJSON () {
-    const { price, dividend } = this
-    return {
-      ...this,
-      price: maybeNumber(price),
-      dividend: maybeNumber(dividend)
-    }
-  }
-}
-
-class Positions extends IndexedTable {
-  constructor () {
-    super('Position')
-    this.factory = Position
-    this.order = sortBy('ticker')
-      .thenBy('who')
-      .thenBy('account')
-    this.ix.main = new UniqueIndex(
-      ({ ticker, who, account }) => `${ticker}_${who}_${account}`
-    )
-  }
-}
-
-class Position extends Row {
-  constructor (data) {
-    const { qty, ...rest } = data
-    super({
-      ...rest,
-      qty: maybeDecimal(qty, 0)
-    })
+  importTrades () {
+    return importTrades(this)
   }
 
-  asJSON () {
-    const { qty } = this
-    return { ...this, qty: maybeNumber(qty) }
-  }
-}
-
-class Trades extends IndexedTable {
-  constructor () {
-    super('Trade')
-    this.factory = Trade
-    this.order = sortBy('who')
-      .thenBy('account')
-      .thenBy('ticker')
-      .thenBy('seq')
-    this.ix.main = new UniqueIndex(
-      ({ who, account, ticker, seq }) => `${who}_${account}_${ticker}_${seq}`
-    )
-
-    this.ix.position = new Index(
-      ({ who, account, ticker }) => `${who}_${account}_${ticker}`
-    )
+  fetchPrices () {
+    return fetchPrices(this)
   }
 
-  setTrades (data) {
-    const existing = [...this.ix.position.get(data[0])]
-    existing.sort(sortBy('seq'))
-    let seq = 1
-    for (const row of data) {
-      this.set({ ...row, seq })
-      seq++
-    }
-    for (const row of existing.slice(data.length)) {
-      this.delete(row)
-    }
-  }
-}
-
-class Trade extends Row {
-  constructor (data) {
-    const { cost, gain, qty, ...rest } = data
-    super({
-      ...rest,
-      qty: maybeDecimal(qty, 0),
-      cost: maybeDecimal(cost, 2),
-      gain: maybeDecimal(gain, 2)
-    })
+  exportPositions () {
+    return exportPositions(this)
   }
 
-  asJSON () {
-    const { qty, cost, gain } = this
-    return {
-      ...this,
-      qty: maybeNumber(qty),
-      cost: maybeNumber(cost),
-      gain: maybeNumber(gain)
-    }
+  exportTrades () {
+    return exportTrades(this)
+  }
+
+  exportStocks () {
+    return exportStocks(this)
   }
 }

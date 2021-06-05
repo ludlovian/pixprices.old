@@ -1,42 +1,35 @@
 import Portfolio from './portfolio.mjs'
-import {
-  importFromPortfolioSheet,
-  importFromTradesSheet,
-  importFromStocksSheet
-} from './import.mjs'
-import { updatePrices } from './fetch.mjs'
-import { exportPositions, exportTrades, exportStocks } from './export.mjs'
 
 export async function update (options) {
   const portfolio = new Portfolio()
   await portfolio.load()
 
   if (options['import-portfolio']) {
-    await importFromPortfolioSheet(portfolio)
+    await portfolio.importPortfolio()
   }
 
   if (options['import-trades']) {
-    await importFromTradesSheet(portfolio)
+    await portfolio.importTrades()
   }
 
   if (options['import-stocks']) {
-    await importFromStocksSheet(portfolio)
+    await portfolio.importStocks()
   }
 
   if (options['fetch-prices']) {
-    await updatePrices(portfolio)
+    await portfolio.fetchPrices()
   }
 
   await portfolio.save()
 
   if (options['export-positions']) {
-    await exportPositions(portfolio)
+    await portfolio.exportPositions()
   }
   if (options['export-trades']) {
-    await exportTrades(portfolio)
+    await portfolio.exportTrades()
   }
 
   if (options['export-stocks']) {
-    await exportStocks(portfolio)
+    await portfolio.exportStocks()
   }
 }

@@ -8,6 +8,7 @@ export default {
     'stream/promises',
     'sade',
     'mime/lite.js',
+    'tinydate',
     '@googleapis/sheets',
     '@googleapis/drive',
     '@google-cloud/datastore',

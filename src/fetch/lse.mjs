@@ -1,12 +1,12 @@
 import log from 'logjs'
 import sleep from 'pixutil/sleep'
 import Scrapie from 'scrapie'
-
 import decimal from 'decimal'
+
 import { get, toISODateTime } from './util.mjs'
 
 const debug = log
-  .prefix('lse:')
+  .prefix('fetch:lse:')
   .colour()
   .level(3)
 
