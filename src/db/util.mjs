@@ -16,7 +16,7 @@ export function readDecimal (x, prec) {
 }
 
 export function writeDecimal (x) {
-  return x ? x.number : undefined
+  return x ? x.toString() : undefined
 }
 
 const asPlainDate = tinydate('{YYYY}-{MM}-{DD}')

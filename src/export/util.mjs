@@ -1,7 +1,7 @@
 import { SerialDate } from 'googlejs/sheets'
 
 export function exportDecimal (x) {
-  return x ? x.number : 0
+  return x ? x.toNumber() : 0
 }
 
 export function makeCSV (arr) {

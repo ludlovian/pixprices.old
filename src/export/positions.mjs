@@ -27,7 +27,7 @@ function getPositionsSheet ({ stocks, positions }) {
     .thenBy('account')
 
   return [...positions.all()]
-    .filter(pos => pos.qty && pos.qty.number)
+    .filter(pos => pos.qty && pos.qty.cmp(0n) > 0)
     .sort(sortFn)
     .map(addStock(stocks))
     .map(addDerived)

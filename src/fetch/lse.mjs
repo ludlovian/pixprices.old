@@ -35,7 +35,7 @@ async function * fetchCollection (url, collClass, priceSource) {
   const items = []
   const addItem = data => {
     const { name, ticker } = extractNameAndTicker(data[0])
-    const price = decimal(extractNumber(data[1]) / 100)
+    const price = extractPriceInPence(data[1])
     items.push({ ticker, name, price, priceUpdated, priceSource })
     count++
   }
@@ -88,7 +88,7 @@ export async function fetchPrice (ticker) {
   })
 
   scrapie.when(whenBid).on('text', t => {
-    item.price = item.price || decimal(extractNumber(t) / 100)
+    item.price = item.price || extractPriceInPence(t)
   })
 
   const source = await get(url)
@@ -111,6 +111,10 @@ function extractNameAndTicker (text) {
   return { name, ticker: ticker.replace(/\.+$/, '') }
 }
 
-function extractNumber (text) {
-  return parseFloat(text.replace(/,/g, ''))
+const hundred = decimal(100)
+function extractPriceInPence (text) {
+  return decimal(text.replace(/[,\s]/g, ''))
+    .precision(6)
+    .div(hundred)
+    .normalise()
 }

@@ -99,18 +99,20 @@ function addCosts (groups) {
 }
 
 function buildPosition () {
-  const pos = { qty: decimal(0), cost: decimal('0.00') }
+  const pos = { qty: decimal(0n), cost: decimal('0.00') }
   return trade => {
     const { qty, cost } = trade
-    if (qty && cost && qty.number > 0) {
+    if (qty && cost && qty.cmp(0n) > 0) {
       // buy
       pos.qty = pos.qty.add(qty)
       pos.cost = pos.cost.add(cost)
-    } else if (qty && cost && qty.number < 0) {
+    } else if (qty && cost && qty.cmp(0n) < 0) {
       const prev = { ...pos }
       const proceeds = cost.abs()
       pos.qty = pos.qty.add(qty)
-      const remain = prev.qty.number ? pos.qty.number / prev.qty.number : 0
+      const remain = prev.qty.eq(0n)
+        ? decimal(0n)
+        : pos.qty.precision(9).div(prev.qty)
       pos.cost = prev.cost.mul(remain)
       trade.cost = prev.cost.sub(pos.cost).neg()
       trade.gain = proceeds.sub(trade.cost.abs())
