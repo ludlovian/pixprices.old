@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import sade from 'sade';
-import { format } from 'util';
+import { format, inspect } from 'util';
 import tinydate from 'tinydate';
 import { get as get$1 } from 'https';
 import { stat, writeFile, unlink } from 'fs/promises';
@@ -928,56 +928,65 @@ class PortfolioTable extends Table {
   }
 }
 
-const factors = Array(13)
-  .fill()
-  .map((_, n) => Math.pow(10, n));
+const sgn = d => d >= 0n;
+const abs = d => (sgn(d) ? d : -d);
+const div = (x, y) => {
+  const s = sgn(x) ? sgn(y) : !sgn(y);
+  x = abs(x);
+  y = abs(y);
+  const r = x % y;
+  const n = x / y + (r * 2n >= y ? 1n : 0n);
+  return s ? n : -n
+};
+const rgxNumber = /^-?\d+(?:\.\d+)?$/;
 
-const inspect = Symbol.for('nodejs.util.inspect.custom');
-const DIG = Symbol('digits');
-const EXP = Symbol('exponent');
-const FAC = Symbol('factor');
-
-function decimal (number, opts = {}) {
-  if (number instanceof Decimal) return number
-  if (Array.isArray(number)) return new Decimal(...number)
-  const { minPrecision = 0, maxPrecision = 12 } = opts;
-  const [d, x] = parseNumber(number, minPrecision, maxPrecision);
-  return new Decimal(d, x)
+function decimal (x, opts = {}) {
+  if (x instanceof Decimal) return x
+  if (typeof x === 'bigint') return new Decimal(x, 0)
+  if (typeof x === 'number') {
+    if (Number.isInteger(x)) return new Decimal(BigInt(x), 0)
+    x = x.toString();
+  }
+  if (typeof x !== 'string') throw new TypeError('Invalid number: ' + x)
+  if (!rgxNumber.test(x)) throw new TypeError('Invalid number: ' + x)
+  const i = x.indexOf('.');
+  if (i > -1) {
+    x = x.replace('.', '');
+    return new Decimal(BigInt(x), x.length - i)
+  } else {
+    return new Decimal(BigInt(x), 0)
+  }
 }
 
+decimal.isDecimal = function isDecimal (d) {
+  return d instanceof Decimal
+};
+
 class Decimal {
-  constructor (dig, exp) {
-    Object.freeze(
-      Object.defineProperties(this, {
-        [DIG]: { value: Math.round(dig) },
-        [EXP]: { value: exp },
-        [FAC]: { value: factors[exp] }
-      })
-    );
+  constructor (digs, prec) {
+    this._d = digs;
+    this._p = prec;
+    Object.freeze(this);
   }
 
-  [inspect] (depth, opts) {
+  [inspect.custom] (depth, opts) {
     /* c8 ignore next */
     if (depth < 0) return opts.stylize('[Decimal]', 'number')
     return `Decimal { ${opts.stylize(this.toString(), 'number')} }`
   }
 
-  get tuple () {
-    return [this[DIG], this[EXP]]
-  }
-
-  get number () {
-    return this[DIG] / this[FAC]
+  toNumber () {
+    const factor = getFactor(this._p);
+    return Number(this._d) / Number(factor)
   }
 
   toString () {
-    const neg = this[DIG] < 0;
-    const e = this[EXP];
-    let s = Math.abs(this[DIG])
-      .toString()
-      .padStart(e + 1, '0');
-    if (e) s = s.slice(0, -e) + '.' + s.slice(-e);
-    return neg ? '-' + s : s
+    const s = sgn(this._d);
+    const p = this._p;
+    const d = abs(this._d);
+    let t = d.toString().padStart(p + 1, '0');
+    if (p) t = t.slice(0, -p) + '.' + t.slice(-p);
+    return s ? t : '-' + t
   }
 
   toJSON () {
@@ -985,65 +994,79 @@ class Decimal {
   }
 
   precision (p) {
-    if (this[EXP] === p) return this
-    if (!(p in factors)) throw new TypeError('Unsupported precision')
-    if (p > this[EXP]) {
-      const f = factors[p - this[EXP]];
-      return new Decimal(this[DIG] * f, p)
+    const prec = this._p;
+    if (prec === p) return this
+    if (p > prec) {
+      const f = getFactor(p - prec);
+      return new Decimal(this._d * f, p)
     } else {
-      const f = factors[this[EXP] - p];
-      return new Decimal(this[DIG] / f, p)
+      const f = getFactor(prec - p);
+      return new Decimal(div(this._d, f), p)
     }
   }
 
+  neg () {
+    return new Decimal(-this._d, this._p)
+  }
+
   add (other) {
-    const x = this;
-    const y = decimal(other);
-    const exp = Math.max(x[EXP], y[EXP]);
-    return new Decimal(x.precision(exp)[DIG] + y.precision(exp)[DIG], exp)
+    other = decimal(other);
+    if (other._p > this._p) return other.add(this)
+    other = other.precision(this._p);
+    return new Decimal(this._d + other._d, this._p)
   }
 
   sub (other) {
     other = decimal(other);
-    return this.add(decimal(other).neg())
+    return this.add(other.neg())
   }
 
-  mul (x) {
-    x = decimal(x).number;
-    return new Decimal(this[DIG] * x, this[EXP])
+  mul (other) {
+    other = decimal(other);
+    // x*10^-a * y*10^-b = xy*10^-(a+b)
+    const p = this._p + other._p;
+    const d = this._d * other._d;
+    return new Decimal(d, p).precision(this._p)
   }
 
-  div (x) {
-    x = decimal(x).number;
-    if (!x) throw new Error('Cannot divide by zero')
-    return new Decimal(this[DIG] / x, this[EXP])
+  div (other) {
+    other = decimal(other);
+    // x*10^-a / y*10^-b = (x/y)*10^-(a-b)
+    const d = div(this._d * getFactor(other._p), other._d);
+    return new Decimal(d, this._p)
   }
 
   abs () {
-    return new Decimal(Math.abs(this[DIG]), this[EXP])
+    if (sgn(this._d)) return this
+    return new Decimal(-this._d, this._p)
   }
 
-  neg () {
-    return new Decimal(-this[DIG], this[EXP])
+  cmp (other) {
+    other = decimal(other);
+    if (this._p < other._p) return -other.cmp(this) || 0
+    other = other.precision(this._p);
+    return this._d < other._d ? -1 : this._d > other._d ? 1 : 0
+  }
+
+  eq (other) {
+    return this.cmp(other) === 0
+  }
+
+  normalise () {
+    if (this._d === 0n) return this.precision(0)
+    for (let i = 0; i < this._p; i++) {
+      if (this._d % getFactor(i + 1) !== 0n) {
+        return this.precision(this._p - i)
+      }
+    }
+    return this.precision(0)
   }
 }
 
-const rgx = /^-?\d+(?:\.\d+)?$/;
-function parseNumber (n, minp, maxp) {
-  let s;
-  if (typeof n === 'number') {
-    s = n.toString();
-  } else if (typeof n === 'string') {
-    s = n;
-    n = parseFloat(s);
-  } else {
-    throw new TypeError('Invalid number: ' + n)
-  }
-  if (!rgx.test(s)) throw new TypeError('Invalid number: ' + s)
-  const p = Math.min(Math.max((s.split('.')[1] || '').length, minp), maxp);
-  if (!(p in factors)) throw new TypeError('Unsupported precision')
-  const d = Math.round(n * factors[p]);
-  return [d, p]
+const factors = [];
+function getFactor (n) {
+  n = Math.floor(n);
+  return n in factors ? factors[n] : (factors[n] = 10n ** BigInt(n))
 }
 
 function clean (x) {
@@ -1060,7 +1083,7 @@ function readDecimal (x, prec) {
 }
 
 function writeDecimal (x) {
-  return x ? x.number : undefined
+  return x ? x.toString() : undefined
 }
 
 const asPlainDate = tinydate('{YYYY}-{MM}-{DD}');
@@ -1627,18 +1650,20 @@ function addCosts (groups) {
 }
 
 function buildPosition () {
-  const pos = { qty: decimal(0), cost: decimal('0.00') };
+  const pos = { qty: decimal(0n), cost: decimal('0.00') };
   return trade => {
     const { qty, cost } = trade;
-    if (qty && cost && qty.number > 0) {
+    if (qty && cost && qty.cmp(0n) > 0) {
       // buy
       pos.qty = pos.qty.add(qty);
       pos.cost = pos.cost.add(cost);
-    } else if (qty && cost && qty.number < 0) {
+    } else if (qty && cost && qty.cmp(0n) < 0) {
       const prev = { ...pos };
       const proceeds = cost.abs();
       pos.qty = pos.qty.add(qty);
-      const remain = prev.qty.number ? pos.qty.number / prev.qty.number : 0;
+      const remain = prev.qty.eq(0n)
+        ? decimal(0n)
+        : pos.qty.precision(9).div(prev.qty);
       pos.cost = prev.cost.mul(remain);
       trade.cost = prev.cost.sub(pos.cost).neg();
       trade.gain = proceeds.sub(trade.cost.abs());
@@ -1948,7 +1973,7 @@ async function * fetchCollection (url, collClass, priceSource) {
   const items = [];
   const addItem = data => {
     const { name, ticker } = extractNameAndTicker(data[0]);
-    const price = decimal(extractNumber(data[1]) / 100);
+    const price = extractPriceInPence(data[1]);
     items.push({ ticker, name, price, priceUpdated, priceSource });
     count++;
   };
@@ -2001,7 +2026,7 @@ async function fetchPrice (ticker) {
   });
 
   scrapie.when(whenBid).on('text', t => {
-    item.price = item.price || decimal(extractNumber(t) / 100);
+    item.price = item.price || extractPriceInPence(t);
   });
 
   const source = await get(url);
@@ -2024,8 +2049,12 @@ function extractNameAndTicker (text) {
   return { name, ticker: ticker.replace(/\.+$/, '') }
 }
 
-function extractNumber (text) {
-  return parseFloat(text.replace(/,/g, ''))
+const hundred = decimal(100);
+function extractPriceInPence (text) {
+  return decimal(text.replace(/[,\s]/g, ''))
+    .precision(6)
+    .div(hundred)
+    .normalise()
 }
 
 const debug$3 = log
@@ -2096,7 +2125,7 @@ async function * getPrices (tickers) {
 }
 
 function exportDecimal (x) {
-  return x ? x.number : 0
+  return x ? x.toNumber() : 0
 }
 
 function makeCSV (arr) {
@@ -2142,7 +2171,7 @@ function getPositionsSheet ({ stocks, positions }) {
     .thenBy('account');
 
   return [...positions.all()]
-    .filter(pos => pos.qty && pos.qty.number)
+    .filter(pos => pos.qty && pos.qty.cmp(0n) > 0)
     .sort(sortFn)
     .map(addStock(stocks))
     .map(addDerived)
