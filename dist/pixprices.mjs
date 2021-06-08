@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import sade from 'sade';
-import { format, inspect } from 'util';
+import { format } from 'util';
 import tinydate from 'tinydate';
 import { get as get$1 } from 'https';
 import { stat, writeFile, unlink } from 'fs/promises';
@@ -928,23 +928,41 @@ class PortfolioTable extends Table {
   }
 }
 
-const sgn = d => d >= 0n;
+/* c8 ignore next 4 */
+const customInspect = Symbol
+  ? Symbol.for('nodejs.util.inspect.custom')
+  : '_customInspect';
+const hasBig = typeof BigInt === 'function';
+const big = hasBig ? BigInt : x => Math.floor(Number(x));
+const big0 = big(0);
+const big1 = big(1);
+const big2 = big(2);
+const sgn = d => d >= big0;
 const abs = d => (sgn(d) ? d : -d);
-const div = (x, y) => {
+const divBig = (x, y) => {
   const s = sgn(x) ? sgn(y) : !sgn(y);
   x = abs(x);
   y = abs(y);
   const r = x % y;
-  const n = x / y + (r * 2n >= y ? 1n : 0n);
+  const n = x / y + (r * big2 >= y ? big1 : big0);
   return s ? n : -n
 };
+/* c8 ignore next */
+const div = hasBig ? divBig : (x, y) => Math.round(x / y);
 const rgxNumber = /^-?\d+(?:\.\d+)?$/;
+
+const synonyms = {
+  precision: 'withPrecision',
+  withPrec: 'withPrecision',
+  withDP: 'withPrecision',
+  toJSON: 'toString'
+};
 
 function decimal (x, opts = {}) {
   if (x instanceof Decimal) return x
   if (typeof x === 'bigint') return new Decimal(x, 0)
   if (typeof x === 'number') {
-    if (Number.isInteger(x)) return new Decimal(BigInt(x), 0)
+    if (Number.isInteger(x)) return new Decimal(big(x), 0)
     x = x.toString();
   }
   if (typeof x !== 'string') throw new TypeError('Invalid number: ' + x)
@@ -952,9 +970,9 @@ function decimal (x, opts = {}) {
   const i = x.indexOf('.');
   if (i > -1) {
     x = x.replace('.', '');
-    return new Decimal(BigInt(x), x.length - i)
+    return new Decimal(big(x), x.length - i)
   } else {
-    return new Decimal(BigInt(x), 0)
+    return new Decimal(big(x), 0)
   }
 }
 
@@ -969,7 +987,7 @@ class Decimal {
     Object.freeze(this);
   }
 
-  [inspect.custom] (depth, opts) {
+  [customInspect] (depth, opts) {
     /* c8 ignore next */
     if (depth < 0) return opts.stylize('[Decimal]', 'number')
     return `Decimal { ${opts.stylize(this.toString(), 'number')} }`
@@ -989,11 +1007,7 @@ class Decimal {
     return s ? t : '-' + t
   }
 
-  toJSON () {
-    return this.toString()
-  }
-
-  precision (p) {
+  withPrecision (p) {
     const prec = this._p;
     if (prec === p) return this
     if (p > prec) {
@@ -1012,7 +1026,7 @@ class Decimal {
   add (other) {
     other = decimal(other);
     if (other._p > this._p) return other.add(this)
-    other = other.precision(this._p);
+    other = other.withPrecision(this._p);
     return new Decimal(this._d + other._d, this._p)
   }
 
@@ -1024,16 +1038,15 @@ class Decimal {
   mul (other) {
     other = decimal(other);
     // x*10^-a * y*10^-b = xy*10^-(a+b)
-    const p = this._p + other._p;
-    const d = this._d * other._d;
-    return new Decimal(d, p).precision(this._p)
+    return new Decimal(this._d * other._d, this._p + other._p).withPrecision(
+      this._p
+    )
   }
 
   div (other) {
     other = decimal(other);
     // x*10^-a / y*10^-b = (x/y)*10^-(a-b)
-    const d = div(this._d * getFactor(other._p), other._d);
-    return new Decimal(d, this._p)
+    return new Decimal(div(this._d * getFactor(other._p), other._d), this._p)
   }
 
   abs () {
@@ -1044,7 +1057,7 @@ class Decimal {
   cmp (other) {
     other = decimal(other);
     if (this._p < other._p) return -other.cmp(this) || 0
-    other = other.precision(this._p);
+    other = other.withPrecision(this._p);
     return this._d < other._d ? -1 : this._d > other._d ? 1 : 0
   }
 
@@ -1053,20 +1066,24 @@ class Decimal {
   }
 
   normalise () {
-    if (this._d === 0n) return this.precision(0)
+    if (this._d === big0) return this.withPrecision(0)
     for (let i = 0; i < this._p; i++) {
-      if (this._d % getFactor(i + 1) !== 0n) {
-        return this.precision(this._p - i)
+      if (this._d % getFactor(i + 1) !== big0) {
+        return this.withPrecision(this._p - i)
       }
     }
-    return this.precision(0)
+    return this.withPrecision(0)
   }
+}
+
+for (const k in synonyms) {
+  Decimal.prototype[k] = Decimal.prototype[synonyms[k]];
 }
 
 const factors = [];
 function getFactor (n) {
   n = Math.floor(n);
-  return n in factors ? factors[n] : (factors[n] = 10n ** BigInt(n))
+  return n in factors ? factors[n] : (factors[n] = big(10) ** big(n))
 }
 
 function clean (x) {
@@ -1078,7 +1095,7 @@ function clean (x) {
 function readDecimal (x, prec) {
   if (x == null) return undefined
   const d = decimal(x);
-  if (prec != null) return d.precision(prec)
+  if (prec != null) return d.withPrecision(prec)
   return d
 }
 
@@ -1441,7 +1458,7 @@ async function importStocks ({ stocks }) {
 function importDecimal (x, prec) {
   if (x == null || x === '') return undefined
   const d = decimal(x);
-  if (prec != null) return d.precision(prec)
+  if (prec != null) return d.withPrecision(prec)
   return d
 }
 
@@ -1663,7 +1680,7 @@ function buildPosition () {
       pos.qty = pos.qty.add(qty);
       const remain = prev.qty.eq(0n)
         ? decimal(0n)
-        : pos.qty.precision(9).div(prev.qty);
+        : pos.qty.withPrecision(9).div(prev.qty);
       pos.cost = prev.cost.mul(remain);
       trade.cost = prev.cost.sub(pos.cost).neg();
       trade.gain = proceeds.sub(trade.cost.abs());
@@ -2052,7 +2069,7 @@ function extractNameAndTicker (text) {
 const hundred = decimal(100);
 function extractPriceInPence (text) {
   return decimal(text.replace(/[,\s]/g, ''))
-    .precision(6)
+    .withPrecision(6)
     .div(hundred)
     .normalise()
 }
@@ -2189,15 +2206,15 @@ function addDerived (data) {
   const { position: p, stock: s } = data;
   if (s.price && s.dividend) {
     data.yield = s.dividend
-      .precision(6)
+      .withPrecision(6)
       .div(s.price)
-      .precision(3);
+      .withPrecision(3);
   }
   if (p.qty && s.price) {
-    data.value = s.price.mul(p.qty).precision(2);
+    data.value = s.price.mul(p.qty).withPrecision(2);
   }
   if (p.qty && s.dividend) {
-    data.income = s.dividend.mul(p.qty).precision(2);
+    data.income = s.dividend.mul(p.qty).withPrecision(2);
   }
   return data
 }
@@ -2570,7 +2587,7 @@ async function update (options) {
   }
 }
 
-const version = '3.2.0';
+const version = '3.2.1';
 
 const prog = sade('pixprices');
 
