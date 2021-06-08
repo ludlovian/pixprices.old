@@ -114,7 +114,7 @@ function extractNameAndTicker (text) {
 const hundred = decimal(100)
 function extractPriceInPence (text) {
   return decimal(text.replace(/[,\s]/g, ''))
-    .precision(6)
+    .withPrecision(6)
     .div(hundred)
     .normalise()
 }

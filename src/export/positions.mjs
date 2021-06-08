@@ -45,15 +45,15 @@ function addDerived (data) {
   const { position: p, stock: s } = data
   if (s.price && s.dividend) {
     data.yield = s.dividend
-      .precision(6)
+      .withPrecision(6)
       .div(s.price)
-      .precision(3)
+      .withPrecision(3)
   }
   if (p.qty && s.price) {
-    data.value = s.price.mul(p.qty).precision(2)
+    data.value = s.price.mul(p.qty).withPrecision(2)
   }
   if (p.qty && s.dividend) {
-    data.income = s.dividend.mul(p.qty).precision(2)
+    data.income = s.dividend.mul(p.qty).withPrecision(2)
   }
   return data
 }

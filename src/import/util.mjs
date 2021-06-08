@@ -6,7 +6,7 @@ import { toDate } from 'googlejs/sheets'
 export function importDecimal (x, prec) {
   if (x == null || x === '') return undefined
   const d = decimal(x)
-  if (prec != null) return d.precision(prec)
+  if (prec != null) return d.withPrecision(prec)
   return d
 }
 

@@ -112,7 +112,7 @@ function buildPosition () {
       pos.qty = pos.qty.add(qty)
       const remain = prev.qty.eq(0n)
         ? decimal(0n)
-        : pos.qty.precision(9).div(prev.qty)
+        : pos.qty.withPrecision(9).div(prev.qty)
       pos.cost = prev.cost.mul(remain)
       trade.cost = prev.cost.sub(pos.cost).neg()
       trade.gain = proceeds.sub(trade.cost.abs())

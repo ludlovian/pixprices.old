@@ -11,7 +11,7 @@ export function clean (x) {
 export function readDecimal (x, prec) {
   if (x == null) return undefined
   const d = decimal(x)
-  if (prec != null) return d.precision(prec)
+  if (prec != null) return d.withPrecision(prec)
   return d
 }
 
