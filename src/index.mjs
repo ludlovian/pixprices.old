@@ -1,32 +1,16 @@
-import sade from 'sade'
+import Server from './server.mjs'
+import PriceStore from './prices.mjs'
 
-import { update } from './main.mjs'
+async function main () {
+  const host = process.argv.includes('client2') ? 'client2' : 'localhost'
+  const store = new PriceStore()
+  await store.load()
 
-const version = '__VERSION__'
-
-const prog = sade('pixprices')
-
-prog.version(version)
-
-prog
-  .command('update', 'update data')
-  .option('--import-portfolio', 'read portfolio sheet')
-  .option('--import-trades', 'read trades sheet')
-  .option('--import-stocks', 'read stocks sheet')
-  .option('--fetch-prices', 'fetch prices from LSE')
-  .option('--export-positions', 'update the positions sheet')
-  .option('--export-trades', 'update the trades sheet')
-  .option('--export-stocks', 'write the stocks CSV')
-  .action(update)
-
-const parsed = prog.parse(process.argv, {
-  lazy: true
-})
-
-if (parsed) {
-  const { handler, args } = parsed
-  handler(...args).catch(err => {
-    console.error(err)
-    process.exit(1)
-  })
+  const server = new Server(host, store)
+  await server.start()
 }
+
+main().catch(e => {
+  console.log(e)
+  process.exit(1)
+})

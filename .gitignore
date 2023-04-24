@@ -1,4 +1,6 @@
 credentials.json
+server*.cert
+server*.key
 node_modules/
 coverage/
 .nyc_output/
