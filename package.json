@@ -1,6 +1,6 @@
 {
   "name": "pixprices",
-  "version": "3.2.1",
+  "version": "4.0.0",
   "description": "Fetches prices",
   "main": "src/index.mjs",
   "module": "src/index.mjs",
@@ -9,8 +9,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "format": "prettier-standard 'src/**/*.{mjs,js}'",
     "lint": "standard 'src/**/*.{mjs,js}' | snazzy",
-    "start": "node src/index.mjs client2",
-    "version": "npm run build && git add dist/pixprices.mjs"
+    "start": "node src/index.mjs client2"
   },
   "repository": {
     "type": "git",
