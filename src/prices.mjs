@@ -37,7 +37,7 @@ export default class PriceStore {
       ])
 
     while (data.length < prevSize) {
-      data.append(Array.from({ length: 5 }).map(() => ''))
+      data.push(Array.from({ length: 5 }).map(() => ''))
     }
 
     await sheets.updateRange({
