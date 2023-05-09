@@ -9,7 +9,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "format": "prettier-standard 'src/**/*.{mjs,js}'",
     "lint": "standard 'src/**/*.{mjs,js}' | snazzy",
-    "start": "node src/index.mjs client2"
+    "start": "node src/index.mjs"
   },
   "repository": {
     "type": "git",
@@ -19,6 +19,11 @@
   "license": "Unlicense",
   "dependencies": {
     "@googleapis/sheets": "^4.0.2",
+    "@lukeed/ms": "^2.0.1",
+    "@polka/send-type": "^0.5.2",
+    "pixutil": "github:ludlovian/pixutil",
+    "polka": "^0.5.2",
+    "sortby": "github:ludlovian/sortby",
     "tinydate": "^1.3.0"
   },
   "devDependencies": {

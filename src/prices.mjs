@@ -1,18 +1,24 @@
 import * as sheets from 'googlejs/sheets'
 import { log } from './util.mjs'
 
-const PRICES_SHEET_ID = '1UdNhJNLWriEJtAJdbxwswGTl8CBcDK1nkEmJvwbc_5c'
+import createSerial from 'pixutil/serial'
+
+import config from './config.mjs'
 
 export default class PriceStore {
   constructor () {
     this.store = new Map()
+    const serial = createSerial()
+    this.exec = serial.exec.bind(serial)
   }
 
   async load () {
+    const { id, range } = config.priceSheet
+
     this.store.clear()
     const data = await sheets.getRange({
-      sheet: PRICES_SHEET_ID,
-      range: 'Prices!A2:E',
+      sheet: id,
+      range: range(),
       scopes: sheets.scopes.rw
     })
 
@@ -21,10 +27,11 @@ export default class PriceStore {
       const updated = sheets.toDate(updatedSerial)
       this.store.set(ticker, { ticker, name, price, source, updated })
     }
-    log(`${this.store.size} loaded`)
   }
 
   async write (prevSize = 0) {
+    const { id, range } = config.priceSheet
+
     const data = Array.from(this.store.keys())
       .sort()
       .map(ticker => this.store.get(ticker))
@@ -41,22 +48,34 @@ export default class PriceStore {
     }
 
     await sheets.updateRange({
-      sheet: PRICES_SHEET_ID,
-      range: `Prices!A2:E${data.length + 1}`,
+      sheet: id,
+      range: range(data.length),
       data,
       scopes: sheets.scopes.rw
     })
   }
 
-  async updatePrices ({ source, prices }) {
-    const updated = new Date()
-    const prevSize = this.store.size
-    for (const { ticker, name, price } of prices) {
-      this.store.set(ticker, { ticker, name, price, source, updated })
-    }
-    this.cleanup()
-    await this.write(prevSize)
-    log(`Applied ${prices.length} prices from ${source}`)
+  updatePrices ({ source, prices }) {
+    return this.exec(async () => {
+      // if (config.isTest) {
+      //   log(`TEST: received ${prices.length} prices from ${source}`)
+      //   return
+      // }
+      const updated = new Date()
+
+      await this.load()
+      const prevSize = this.store.size
+
+      for (const { ticker, name, price } of prices) {
+        this.store.set(ticker, { ticker, name, price, source, updated })
+      }
+
+      this.cleanup()
+
+      await this.write(prevSize)
+
+      log(`Applied ${prices.length} prices from ${source}`)
+    })
   }
 
   cleanup (days = 7) {

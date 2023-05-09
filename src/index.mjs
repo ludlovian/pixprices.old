@@ -1,12 +1,11 @@
 import Server from './server.mjs'
 import PriceStore from './prices.mjs'
+import Scheduler from './scheduler.mjs'
 
 async function main () {
-  const host = process.argv.includes('client2') ? 'client2' : 'localhost'
-  const store = new PriceStore()
-  await store.load()
-
-  const server = new Server(host, store)
+  const priceStore = new PriceStore()
+  const scheduler = new Scheduler()
+  const server = new Server({ priceStore, scheduler })
   await server.start()
 }
 
